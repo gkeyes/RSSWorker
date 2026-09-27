@@ -236,11 +236,6 @@ const getWithBrowser = async (ctx, url) => {
 		const page = await browser.newPage();
 		await page.setUserAgent(USER_AGENT);
 
-		const cookies = parseBrowserCookies(ctx.env.XIAOHONGSHU_COOKIE || '');
-		if (cookies.length) {
-			await page.setCookie(...cookies);
-		}
-
 		await page.setRequestInterception(true);
 		page.on('request', (request) => {
 			const type = request.resourceType();
@@ -279,7 +274,7 @@ const getWithBrowser = async (ctx, url) => {
 		const data = await extractPage(html);
 
 		if (!hasProfile(data)) {
-			throw new Error('Browser Run 已打开主页，但没有用户资料');
+			throw new Error('匿名 Browser Run 已打开主页，但没有用户资料');
 		}
 
 		return data;
@@ -295,32 +290,29 @@ const getWithBrowser = async (ctx, url) => {
 };
 
 const getUser = async (ctx, url) => {
-	const cookie = ctx.env.XIAOHONGSHU_COOKIE || '';
-	const diagnostics = [`cookieConfigured=${Boolean(cookie)}`];
-
-	if (cookie) {
-		try {
-			const data = await getWithCookie(url, cookie);
-			if (data.notes.length) return { ...data, source: 'cookie-fetch' };
-			diagnostics.push('cookie-fetch=profile-only');
-		} catch (error) {
-			const message = String(error?.message || error);
-			if (message.startsWith('XIAOHONGSHU_COOKIE 登录态无效')) throw error;
-			diagnostics.push(`cookie-fetch=${message}`);
-		}
-	}
+	const diagnostics = [];
+	const parsedUrl = new URL(url);
+	const hasXsecToken = Boolean(parsedUrl.searchParams.get('xsec_token'));
 
 	try {
 		const data = await getWithoutCookie(url);
-		if (data.notes.length) return { ...data, source: 'plain-fetch' };
-		diagnostics.push(hasProfile(data) ? 'plain-fetch=profile-only' : 'plain-fetch=empty');
+		if (data.notes.length) return { ...data, source: hasXsecToken ? 'token-fetch' : 'plain-fetch' };
+		diagnostics.push(hasProfile(data) ? 'fetch=profile-only' : 'fetch=empty');
 	} catch (error) {
-		diagnostics.push(`plain-fetch=${String(error?.message || error)}`);
+		diagnostics.push(`fetch=${String(error?.message || error)}`);
+	}
+
+	// Anonymous bare-UID profile crawling is heavily rate-limited by Xiaohongshu.
+	// Do not burn Browser Run time when the request has no public xsec_token context.
+	if (!hasXsecToken) {
+		throw new Error(
+			`匿名模式下裸 UID 未返回发布笔记；请使用带 xsec_token 的公开小红书用户主页/分享链接。诊断：${diagnostics.join(' | ')}`
+		);
 	}
 
 	try {
 		const data = await getWithBrowser(ctx, url);
-		if (data.notes.length) return { ...data, source: 'browser' };
+		if (data.notes.length) return { ...data, source: 'token-browser' };
 		diagnostics.push(hasProfile(data) ? 'browser=profile-only' : 'browser=empty');
 	} catch (error) {
 		const message = String(error?.message || error);
@@ -328,7 +320,7 @@ const getUser = async (ctx, url) => {
 		diagnostics.push(`browser=${message}`);
 	}
 
-	throw new Error(`小红书用户资料可访问，但没有抓到发布笔记；${diagnostics.join(' | ')}`);
+	throw new Error(`匿名 xsec_token 模式仍未抓到发布笔记；${diagnostics.join(' | ')}`);
 };
 
 const getCoverUrl = (cover) => {
