@@ -1,71 +1,38 @@
 import puppeteer from '@cloudflare/puppeteer';
 import { renderRss2 } from '../../utils/util';
 
-const unwrap = (value) => value?._rawValue ?? value?._value ?? value;
-
 const USER_AGENT =
 	'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36';
 
-const browserHeaders = {
-	Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+const unwrap = (value) => value?._rawValue ?? value?._value ?? value;
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const getHeaders = (cookie = '') => ({
+	Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
 	'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
 	'Cache-Control': 'no-cache',
 	Pragma: 'no-cache',
 	Referer: 'https://www.xiaohongshu.com/',
 	'User-Agent': USER_AGENT,
-};
+	...(cookie ? { Cookie: cookie } : {}),
+});
 
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const parseBrowserCookies = (cookieString) => {
+	if (!cookieString) return [];
 
-const isContextDestroyed = (error) => {
-	const message = String(error?.message || error);
-	return (
-		message.includes('Execution context was destroyed') ||
-		message.includes('Cannot find context with specified id') ||
-		message.includes('Inspected target navigated or closed')
-	);
-};
-
-const evaluateWithNavigationRetry = async (page, fn, ...args) => {
-	let lastError;
-	for (let attempt = 0; attempt < 5; attempt++) {
-		try {
-			return await page.evaluate(fn, ...args);
-		} catch (error) {
-			lastError = error;
-			if (!isContextDestroyed(error)) throw error;
-			await sleep(500 + attempt * 350);
-		}
-	}
-	throw lastError;
-};
-
-const waitForStableUrl = async (page, { timeout = 7000, stableFor = 1200 } = {}) => {
-	const started = Date.now();
-	let lastUrl = page.url();
-	let stableSince = Date.now();
-
-	while (Date.now() - started < timeout) {
-		await sleep(300);
-		const currentUrl = page.url();
-		if (currentUrl !== lastUrl) {
-			lastUrl = currentUrl;
-			stableSince = Date.now();
-			continue;
-		}
-		if (Date.now() - stableSince >= stableFor) return currentUrl;
-	}
-
-	return page.url();
-};
-
-const safePublicUrl = (value) => {
-	try {
-		const parsed = new URL(value);
-		return parsed.origin + parsed.pathname;
-	} catch {
-		return String(value || '');
-	}
+	return cookieString
+		.split(';')
+		.map((part) => {
+			const index = part.indexOf('=');
+			if (index <= 0) return null;
+			return {
+				name: part.slice(0, index).trim(),
+				value: part.slice(index + 1).trim(),
+				domain: '.xiaohongshu.com',
+				path: '/',
+			};
+		})
+		.filter((item) => item?.name);
 };
 
 const normalizeNotes = (notes) => {
@@ -105,185 +72,153 @@ const normalizeNotes = (notes) => {
 	return result;
 };
 
-const parseUserState = (state) => {
-	const user = unwrap(state?.user);
-	if (!user || typeof user !== 'object') {
-		return { userPageData: {}, notes: [] };
-	}
-
-	const userPageData = unwrap(user.userPageData ?? user.userInfo ?? {}) ?? {};
-	const rawNotes = unwrap(user.notes ?? userPageData?.notes ?? []);
-
-	return {
-		userPageData,
-		notes: normalizeNotes(rawNotes),
-	};
-};
-
-const extractInitialState = async (res) => {
-	const scripts = [];
-	const rewriter = new HTMLRewriter()
-		.on('script', {
-			element() {
-				scripts.push('');
-			},
-			text(text) {
-				if (scripts.length) scripts[scripts.length - 1] += text.text;
-			},
-		})
-		.transform(res);
-
-	await rewriter.text();
-
+const parseInitialStateText = (scriptText) => {
 	const marker = 'window.__INITIAL_STATE__=';
-	const source = scripts.find((script) => script.includes(marker));
-	if (!source) {
-		throw new Error('小红书未返回 __INITIAL_STATE__');
+	const index = scriptText.indexOf(marker);
+	if (index < 0) {
+		throw new Error('小红书页面缺少 __INITIAL_STATE__');
 	}
 
-	let script = source.slice(source.indexOf(marker) + marker.length).trim();
+	let script = scriptText.slice(index + marker.length).trim();
 	script = script.replace(/;\s*$/, '');
 	script = script.replaceAll(/new Map\(\s*\[\s*\]\s*\)/g, 'null').replaceAll(/\bundefined\b/g, 'null');
 
-	return JSON.parse(script);
+	try {
+		return JSON.parse(script);
+	} catch (error) {
+		throw new Error(`小红书 __INITIAL_STATE__ 解析失败: ${error.message}`);
+	}
 };
 
-const getStaticState = async (url) => {
-	const res = await fetch(url, {
-		headers: browserHeaders,
+const extractPage = async (html) => {
+	let scriptText = '';
+	const tokenizedPaths = new Map();
+
+	const rewriter = new HTMLRewriter()
+		.on('script', {
+			element() {},
+			text(text) {
+				if (text.text.includes('window.__INITIAL_STATE__=') || scriptText) {
+					scriptText += text.text;
+				}
+			},
+		})
+		.on('a', {
+			element(element) {
+				const href = element.getAttribute('href') || '';
+				if (!href.includes('xsec_token=')) return;
+				const match = href.match(/\/([0-9a-f]{24})(?:\?|$)/i);
+				if (match) tokenizedPaths.set(match[1], href);
+			},
+		})
+		.transform(new Response(html, { headers: { 'Content-Type': 'text/html; charset=UTF-8' } }));
+
+	await rewriter.text();
+
+	if (!scriptText) {
+		throw new Error('小红书页面未返回 __INITIAL_STATE__');
+	}
+
+	const state = parseInitialStateText(scriptText);
+	const user = unwrap(state?.user);
+	if (!user || typeof user !== 'object') {
+		throw new Error('小红书页面未返回 user 状态');
+	}
+
+	const userPageData = unwrap(user.userPageData ?? user.userInfo ?? {}) ?? {};
+	const notes = normalizeNotes(unwrap(user.notes ?? userPageData?.notes ?? []));
+
+	for (const item of notes) {
+		const noteCard = unwrap(item.noteCard ?? item.note_card ?? item) ?? {};
+		const noteId = item.id ?? item.noteId ?? item.note_id ?? noteCard.noteId ?? noteCard.note_id ?? noteCard.id;
+		const path = noteId ? tokenizedPaths.get(String(noteId)) : '';
+		if (!path) continue;
+
+		try {
+			const parsed = new URL(path, 'https://www.xiaohongshu.com');
+			item.xsecToken = parsed.searchParams.get('xsec_token') || item.xsecToken || item.xsec_token || '';
+		} catch {
+			// Tokenized link enrichment is optional.
+		}
+	}
+
+	return { userPageData, notes };
+};
+
+const getBasicInfo = (userPageData) => {
+	const page = unwrap(userPageData) ?? {};
+	return unwrap(page.basicInfo ?? page.basic_info ?? page.userInfo ?? page.user_info) ?? {};
+};
+
+const hasProfile = (data) => {
+	const basic = getBasicInfo(data?.userPageData);
+	return Boolean(basic.nickname ?? basic.nickName ?? basic.name);
+};
+
+const checkCookie = async (cookie) => {
+	if (!cookie) return { configured: false, valid: false, reason: 'missing' };
+
+	try {
+		const response = await fetch('https://edith.xiaohongshu.com/api/sns/web/v2/user/me', {
+			headers: {
+				...getHeaders(cookie),
+				Accept: 'application/json, text/plain, */*',
+				Origin: 'https://www.xiaohongshu.com',
+			},
+		});
+
+		const data = await response.json();
+		return {
+			configured: true,
+			valid: response.ok && data?.code === 0 && Boolean(data?.data?.user_id),
+			reason: data?.msg ?? data?.message ?? `HTTP ${response.status}`,
+		};
+	} catch (error) {
+		return {
+			configured: true,
+			valid: null,
+			reason: String(error?.message || error),
+		};
+	}
+};
+
+const fetchProfileHtml = async (url, cookie = '') => {
+	const response = await fetch(url, {
+		headers: getHeaders(cookie),
 		redirect: 'follow',
 	});
 
-	if (!res.ok) {
-		throw new Error(`小红书主页请求失败: HTTP ${res.status}`);
+	if (!response.ok) {
+		throw new Error(`小红书主页请求失败: HTTP ${response.status}`);
 	}
 
-	return parseUserState(await extractInitialState(res));
+	return response.text();
 };
 
-const parseBrowserCookies = (cookieString) => {
-	if (!cookieString) return [];
+const getWithCookie = async (url, cookie) => {
+	const cookieStatus = await checkCookie(cookie);
+	if (cookieStatus.valid === false) {
+		throw new Error(`XIAOHONGSHU_COOKIE 登录态无效: ${cookieStatus.reason}`);
+	}
 
-	return cookieString
-		.split(';')
-		.map((part) => {
-			const index = part.indexOf('=');
-			if (index <= 0) return null;
-			return {
-				name: part.slice(0, index).trim(),
-				value: part.slice(index + 1).trim(),
-				domain: '.xiaohongshu.com',
-				path: '/',
-			};
-		})
-		.filter((item) => item?.name);
+	const html = await fetchProfileHtml(url, cookie);
+	const data = await extractPage(html);
+
+	if (!hasProfile(data)) {
+		throw new Error('Cookie 请求已返回页面，但没有用户资料；登录态可能已失效或触发风控');
+	}
+
+	return data;
 };
 
-const extractPlainRuntimeState = async (page, uid) =>
-	evaluateWithNavigationRetry(page, (targetUid) => {
-		const unwrapLocal = (value) => {
-			let current = value;
-			for (let i = 0; i < 8; i++) {
-				if (!current || typeof current !== 'object') break;
-				if ('_rawValue' in current && current._rawValue !== current) {
-					current = current._rawValue;
-					continue;
-				}
-				if ('_value' in current && current._value !== current) {
-					current = current._value;
-					continue;
-				}
-				break;
-			}
-			return current;
-		};
+const getWithoutCookie = async (url) => {
+	const html = await fetchProfileHtml(url);
+	return extractPage(html);
+};
 
-		const initial = window.__INITIAL_STATE__ || {};
-		const user = unwrapLocal(initial.user) || {};
-		const pageData = unwrapLocal(user.userPageData ?? user.userInfo ?? {}) || {};
-		const basic = unwrapLocal(pageData.basicInfo ?? pageData.basic_info ?? pageData.userInfo ?? pageData.user_info) || {};
+const isNavigationTimeout = (error) => String(error?.message || error).includes('Navigation timeout');
 
-		const basicInfo = {
-			nickname: basic.nickname ?? basic.nickName ?? basic.name ?? '',
-			desc: basic.desc ?? basic.description ?? '',
-			imageb: basic.imageb ?? '',
-			images: basic.images ?? '',
-			avatar: basic.avatar ?? basic.image ?? '',
-			userId: basic.userId ?? basic.user_id ?? targetUid,
-		};
-
-		const interactionsRaw = unwrapLocal(pageData.interactions) || [];
-		const interactions = Array.isArray(interactionsRaw)
-			? interactionsRaw.map((item) => ({
-					count: item?.count ?? '',
-					name: item?.name ?? '',
-				}))
-			: [];
-
-		const tagsRaw = unwrapLocal(pageData.tags) || [];
-		const tags = Array.isArray(tagsRaw) ? tagsRaw.map((item) => ({ name: item?.name ?? '' })) : [];
-
-		const domNotes = new Map();
-		for (const anchor of document.querySelectorAll(
-			'a[href*="/explore/"], a[href*="/discovery/item/"], a[href*="xsec_token"]'
-		)) {
-			const href = anchor.href || anchor.getAttribute('href') || '';
-			const match = href.match(/(?:\/explore\/|\/discovery\/item\/)([0-9a-f]{24})(?:[/?#]|$)/i);
-			if (!match) continue;
-
-			const card =
-				anchor.closest('section.note-item') ||
-				anchor.closest('[class*="note-item"]') ||
-				anchor.closest('section') ||
-				anchor.parentElement;
-
-			const text = (selector) => (card?.querySelector(selector)?.textContent || '').trim();
-			const image = card?.querySelector('img');
-			let parsed;
-			try {
-				parsed = new URL(href, location.origin);
-			} catch {
-				continue;
-			}
-
-			domNotes.set(match[1], {
-				id: match[1],
-				xsecToken: parsed.searchParams.get('xsec_token') || '',
-				noteCard: {
-					displayTitle:
-						text('.title') ||
-						text('.note-title') ||
-						anchor.getAttribute('title') ||
-						image?.getAttribute('alt') ||
-						'',
-					user: {
-						nickname:
-							text('.name-time-wrapper .name') ||
-							text('.author .name') ||
-							text('.name') ||
-							text('.username'),
-					},
-					interactInfo: {
-						likedCount: text('.like-wrapper .count') || text('.count'),
-					},
-					cover: {
-						urlDefault: image?.currentSrc || image?.src || image?.getAttribute('src') || '',
-					},
-				},
-			});
-		}
-
-		return {
-			userPageData: {
-				basicInfo,
-				interactions,
-				tags,
-			},
-			notes: Array.from(domNotes.values()),
-		};
-	}, uid);
-
-const getBrowserState = async (ctx, url, uid) => {
+const getWithBrowser = async (ctx, url) => {
 	if (!ctx.env?.BROWSER) {
 		throw new Error('Cloudflare Browser Run binding 不可用');
 	}
@@ -299,189 +234,94 @@ const getBrowserState = async (ctx, url, uid) => {
 			await page.setCookie(...cookies);
 		}
 
-		let postedPayload = null;
-		let postedUrl = '';
-		let postedSeen = false;
-		let postedStatus = null;
-		let postedRawCount = 0;
-		let postedCode = null;
-		let postedMessage = '';
-
 		await page.setRequestInterception(true);
 		page.on('request', (request) => {
 			const type = request.resourceType();
-			if (type === 'image' || type === 'media' || type === 'font') {
+			if (type === 'document' || type === 'script' || type === 'xhr' || type === 'fetch' || type === 'other') {
+				request.continue();
+			} else {
 				request.abort();
-				return;
-			}
-			request.continue();
-		});
-
-		page.on('response', async (response) => {
-			const responseUrl = response.url();
-			if (
-				!responseUrl.includes('/api/sns/web/v1/user_posted') &&
-				!responseUrl.includes('/api/sns/web/v2/user_posted') &&
-				!responseUrl.includes('/api/sns/web/v1/user/posted')
-			) {
-				return;
-			}
-
-			postedSeen = true;
-			postedStatus = response.status();
-			postedUrl = responseUrl;
-
-			try {
-				const json = await response.json();
-				const rawNotes = json?.data?.notes ?? json?.data?.items ?? [];
-				postedRawCount = Array.isArray(rawNotes) ? rawNotes.length : 0;
-				postedCode = json?.code ?? null;
-				postedMessage = String(json?.msg ?? json?.message ?? '').slice(0, 120);
-				const notes = normalizeNotes(rawNotes);
-				if (notes.length) {
-					postedPayload = json;
-				}
-			} catch {
-				// Keep postedSeen/status even when the response body is unavailable.
 			}
 		});
 
 		try {
-			await page.goto(url, {
-				waitUntil: 'domcontentloaded',
-				timeout: 15000,
-			});
+			await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 });
 		} catch (error) {
-			const message = String(error?.message || error);
-			const currentUrl = page.url();
-			const targetHost = new URL(url).hostname;
+			if (!isNavigationTimeout(error)) throw error;
 			let currentHost = '';
 			try {
-				currentHost = new URL(currentUrl).hostname;
+				currentHost = new URL(page.url()).hostname;
 			} catch {
-				// Keep currentHost empty when the page is still about:blank.
+				// about:blank or transient navigation
 			}
-
-			// Xiaohongshu is a long-lived SPA. Browser Run can time out waiting for
-			// DOMContentLoaded even after Chromium has already navigated to the page.
-			// In that case continue with the live page instead of treating navigation
-			// completion as a hard requirement.
-			if (!message.includes('Navigation timeout') || currentHost !== targetHost) {
-				throw error;
-			}
+			if (currentHost !== 'www.xiaohongshu.com') throw error;
 		}
-
-		await waitForStableUrl(page, { timeout: 7000, stableFor: 1200 });
 
 		try {
-			await page.waitForNetworkIdle({ idleTime: 600, timeout: 4000 });
+			await page.waitForSelector('div.reds-tab-item:nth-child(2), .fe-verify-box', { timeout: 3500 });
 		} catch {
-			// Xiaohongshu keeps background connections open; this is best-effort.
+			// The page can still be usable without these exact selectors.
 		}
 
-		await waitForStableUrl(page, { timeout: 3500, stableFor: 900 });
-
-		for (let step = 0; step < 4 && !postedPayload; step++) {
-			await evaluateWithNavigationRetry(
-				page,
-				(index) => {
-					const height = Math.max(document.body?.scrollHeight || 0, document.documentElement?.scrollHeight || 0);
-					window.scrollTo({ top: Math.min(height, 700 + index * 900), behavior: 'instant' });
-				},
-				step
-			);
-			await sleep(900);
+		if (await page.$('.fe-verify-box')) {
+			throw new Error('小红书风控校验已触发（fe-verify-box），本次抓取停止');
 		}
 
-		if (!postedPayload) {
-			try {
-				await evaluateWithNavigationRetry(page, () => {
-					const candidates = Array.from(document.querySelectorAll('div,span,button,a'));
-					const tab = candidates.find((element) => {
-						const text = (element.textContent || '').trim();
-						return text === '笔记' && element.getBoundingClientRect().width > 0;
-					});
-					tab?.click();
-				});
-				await waitForStableUrl(page, { timeout: 3500, stableFor: 900 });
-				await sleep(800);
-				await evaluateWithNavigationRetry(page, () => window.scrollBy(0, 900));
-				await sleep(1200);
-			} catch (error) {
-				if (!isContextDestroyed(error)) {
-					// DOM clicking is only a fallback to trigger lazy loading.
-				}
-			}
+		await sleep(500);
+		const html = await page.content();
+		const data = await extractPage(html);
+
+		if (!hasProfile(data)) {
+			throw new Error('Browser Run 已打开主页，但没有用户资料');
 		}
 
-		const runtime = await extractPlainRuntimeState(page, uid);
-		const apiNotes = normalizeNotes(postedPayload?.data?.notes ?? postedPayload?.data?.items ?? []);
-		const notes = apiNotes.length ? apiNotes : normalizeNotes(runtime.notes);
-
-		if (notes.length) {
-			return {
-				userPageData: runtime.userPageData,
-				notes,
-				source: postedUrl ? 'user_posted' : 'dom',
-			};
-		}
-
-		const nickname = runtime.userPageData?.basicInfo?.nickname;
-		const finalUrl = safePublicUrl(page.url());
-		const diagnostic = [
-			`finalUrl=${finalUrl}`,
-			`userPostedSeen=${postedSeen}`,
-			`status=${postedStatus ?? 'n/a'}`,
-			`rawNotes=${postedRawCount}`,
-			`code=${postedCode ?? 'n/a'}`,
-			postedMessage ? `message=${postedMessage}` : '',
-		].filter(Boolean).join('; ');
-
-		if (nickname) {
-			throw new Error(`已获取小红书用户资料，但未获取到发布笔记；${diagnostic}`);
-		}
-
-		if (!ctx.env.XIAOHONGSHU_COOKIE) {
-			throw new Error(`Browser Session 已执行，但小红书未返回用户资料；请配置 XIAOHONGSHU_COOKIE；${diagnostic}`);
-		}
-
-		throw new Error(`Browser Session 已执行，但小红书未返回用户资料；Cookie 可能已失效或触发风控；${diagnostic}`);
-	} catch (error) {
-		const message = String(error?.message || error);
-		if (message.includes('429') || message.toLowerCase().includes('rate limit')) {
-			throw new Error(`Browser Run 限流: ${message}`);
-		}
-		throw error;
+		return data;
 	} finally {
 		if (browser) {
 			try {
 				await browser.close();
 			} catch {
-				// Always release Browser Run usage when possible.
+				// Always release Browser Run time.
 			}
 		}
 	}
 };
 
-const getProfileNickname = (userPageData) => {
-	const page = unwrap(userPageData) ?? {};
-	const basicInfo = unwrap(page.basicInfo ?? page.basic_info ?? page.userInfo ?? page.user_info) ?? {};
-	return basicInfo.nickname ?? basicInfo.nickName ?? basicInfo.name ?? '';
-};
+const getUser = async (ctx, url) => {
+	const cookie = ctx.env.XIAOHONGSHU_COOKIE || '';
+	const diagnostics = [];
 
-const getUser = async (ctx, url, uid) => {
-	try {
-		const staticData = await getStaticState(url);
-		// A profile-only SSR response is not enough for an RSS feed.
-		// Only skip Browser Run when SSR actually contains notes.
-		if (staticData.notes.length) {
-			return staticData;
+	if (cookie) {
+		try {
+			const data = await getWithCookie(url, cookie);
+			if (data.notes.length) return { ...data, source: 'cookie-fetch' };
+			diagnostics.push('cookie-fetch=profile-only');
+		} catch (error) {
+			const message = String(error?.message || error);
+			if (message.startsWith('XIAOHONGSHU_COOKIE 登录态无效')) throw error;
+			diagnostics.push(`cookie-fetch=${message}`);
 		}
-	} catch {
-		// Static SSR is only a fast path.
 	}
 
-	return getBrowserState(ctx, url, uid);
+	try {
+		const data = await getWithoutCookie(url);
+		if (data.notes.length) return { ...data, source: 'plain-fetch' };
+		diagnostics.push(hasProfile(data) ? 'plain-fetch=profile-only' : 'plain-fetch=empty');
+	} catch (error) {
+		diagnostics.push(`plain-fetch=${String(error?.message || error)}`);
+	}
+
+	try {
+		const data = await getWithBrowser(ctx, url);
+		if (data.notes.length) return { ...data, source: 'browser' };
+		diagnostics.push(hasProfile(data) ? 'browser=profile-only' : 'browser=empty');
+	} catch (error) {
+		const message = String(error?.message || error);
+		if (message.includes('风控校验已触发')) throw error;
+		diagnostics.push(`browser=${message}`);
+	}
+
+	throw new Error(`小红书用户资料可访问，但没有抓到发布笔记；${diagnostics.join(' | ')}`);
 };
 
 const getCoverUrl = (cover) => {
@@ -548,26 +388,23 @@ const deal = async (ctx) => {
 
 	if (cache && ctx.req.query('refresh') !== '1') {
 		const cached = await cache.match(cacheKey);
-		if (cached) {
-			return cached;
-		}
+		if (cached) return cached;
 	}
 
 	const pageUrl = new URL(`https://www.xiaohongshu.com/user/profile/${uid}`);
 	const xsecToken = ctx.req.query('xsec_token');
-
 	if (xsecToken) {
 		pageUrl.searchParams.set('xsec_token', xsecToken);
 		pageUrl.searchParams.set('xsec_source', ctx.req.query('xsec_source') || 'app_share');
 	}
 
-	const { userPageData, notes } = await getUser(ctx, pageUrl.toString(), uid);
+	const { userPageData, notes } = await getUser(ctx, pageUrl.toString());
 	const page = unwrap(userPageData) ?? {};
-	const basicInfo = unwrap(page.basicInfo ?? page.basic_info ?? page.userInfo ?? page.user_info) ?? {};
+	const basicInfo = getBasicInfo(userPageData);
 	const interactions = unwrap(page.interactions) ?? [];
 	const tags = unwrap(page.tags) ?? [];
 
-	const profileNickname = getProfileNickname(userPageData);
+	const profileNickname = basicInfo.nickname ?? basicInfo.nickName ?? basicInfo.name;
 	const firstNote = notes[0] ? unwrap(notes[0]) : null;
 	const firstCard = firstNote ? unwrap(firstNote.noteCard ?? firstNote.note_card ?? firstNote) : null;
 	const firstUser = firstCard ? unwrap(firstCard.user ?? firstNote.user) : null;
