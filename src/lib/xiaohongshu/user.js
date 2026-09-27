@@ -192,12 +192,76 @@ const getBrowserState = async (ctx, url) => {
 							return out;
 						};
 
+						const extractDomNotes = () => {
+							const result = new Map();
+
+							const add = (anchor, card) => {
+								if (!anchor) return;
+								const href = anchor.href || anchor.getAttribute('href') || '';
+								const match = href.match(/(?:\\/explore\\/|\\/discovery\\/item\\/|\\/user\\/profile\\/[^/]+\\/)([0-9a-f]{24})(?:[/?#]|$)/i);
+								if (!match) return;
+
+								const id = match[1];
+								let parsed;
+								try {
+									parsed = new URL(href, location.origin);
+								} catch {
+									return;
+								}
+
+								const root = card || anchor.closest('section.note-item') || anchor.closest('section') || anchor.parentElement;
+								const text = (selector) => (root?.querySelector(selector)?.textContent || '').trim();
+								const image = root?.querySelector('img');
+								const title =
+									text('.title') ||
+									text('.note-title') ||
+									anchor.getAttribute('title') ||
+									image?.getAttribute('alt') ||
+									'';
+								const author =
+									text('.name-time-wrapper .name') ||
+									text('.author .name') ||
+									text('.name') ||
+									text('.username');
+								const liked = text('.like-wrapper .count') || text('.count');
+								const cover = image?.currentSrc || image?.src || image?.getAttribute('src') || '';
+
+								result.set(id, {
+									id,
+									xsecToken: parsed.searchParams.get('xsec_token') || '',
+									noteCard: {
+										displayTitle: title,
+										user: { nickname: author },
+										interactInfo: { likedCount: liked },
+										cover: { urlDefault: cover },
+									},
+								});
+							};
+
+							document.querySelectorAll('#userPostedFeeds a[href*="xsec_token"], #userPostedFeeds a[href*="/explore/"], #userPostedFeeds a[href*="/discovery/item/"]')
+								.forEach((anchor) => add(anchor, anchor.closest('section.note-item')));
+
+							if (!result.size) {
+								document.querySelectorAll('section.note-item:not(.query-note-item)').forEach((card) => {
+									const anchor =
+										card.querySelector('a.cover[href*="/explore/"]') ||
+										card.querySelector('a[href*="/explore/"]') ||
+										card.querySelector('a[href*="/discovery/item/"]') ||
+										card.querySelector('a[href*="xsec_token"]');
+									add(anchor, card);
+								});
+							}
+
+							return Array.from(result.values());
+						};
+
 						const initial = window.__INITIAL_STATE__ || {};
 						const user = unwrap(initial.user) || {};
+						const domNotes = extractDomNotes();
 						const picked = {
 							user: {
 								userPageData: sanitize(user.userPageData ?? user.userInfo ?? {}),
-								notes: sanitize(user.notes ?? user.userPageData?.notes ?? []),
+								notes: domNotes.length ? domNotes : sanitize(user.notes ?? user.userPageData?.notes ?? []),
 							},
 						};
 						const value = JSON.stringify(picked);
