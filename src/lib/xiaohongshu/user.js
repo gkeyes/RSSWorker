@@ -251,6 +251,16 @@ const getBrowserState = async (ctx, url, uid) => {
 		let postedPayload = null;
 		let postedUrl = '';
 
+		await page.setRequestInterception(true);
+		page.on('request', (request) => {
+			const type = request.resourceType();
+			if (type === 'image' || type === 'media' || type === 'font') {
+				request.abort();
+				return;
+			}
+			request.continue();
+		});
+
 		page.on('response', async (response) => {
 			const responseUrl = response.url();
 			if (
@@ -273,13 +283,35 @@ const getBrowserState = async (ctx, url, uid) => {
 			}
 		});
 
-		await page.goto(url, {
-			waitUntil: 'domcontentloaded',
-			timeout: 45000,
-		});
+		try {
+			await page.goto(url, {
+				waitUntil: 'domcontentloaded',
+				timeout: 15000,
+			});
+		} catch (error) {
+			const message = String(error?.message || error);
+			const currentUrl = page.url();
+			const targetHost = new URL(url).hostname;
+			let currentHost = '';
+			try {
+				currentHost = new URL(currentUrl).hostname;
+			} catch {
+				// Keep currentHost empty when the page is still about:blank.
+			}
+
+			// Xiaohongshu is a long-lived SPA. Browser Run can time out waiting for
+			// DOMContentLoaded even after Chromium has already navigated to the page.
+			// In that case continue with the live page instead of treating navigation
+			// completion as a hard requirement.
+			if (!message.includes('Navigation timeout') || currentHost !== targetHost) {
+				throw error;
+			}
+		}
+
+		await sleep(1200);
 
 		try {
-			await page.waitForNetworkIdle({ idleTime: 800, timeout: 8000 });
+			await page.waitForNetworkIdle({ idleTime: 600, timeout: 5000 });
 		} catch {
 			// Xiaohongshu keeps background connections open; this is best-effort.
 		}
