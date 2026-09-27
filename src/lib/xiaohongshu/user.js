@@ -81,7 +81,14 @@ const parseInitialStateText = (scriptText) => {
 
 	let script = scriptText.slice(index + marker.length).trim();
 	script = script.replace(/;\s*$/, '');
-	script = script.replaceAll(/new Map\(\s*\[\s*\]\s*\)/g, 'null').replaceAll(/\bundefined\b/g, 'null');
+	// Xiaohongshu serializes parts of Vue state as executable JS rather than strict JSON.
+	// Normalize the common container literals before JSON.parse.
+	script = script
+		.replaceAll(/new Map\(\s*\[\s*\]\s*\)/g, '{}')
+		.replaceAll(/new Set\(\s*\[\s*\]\s*\)/g, '[]')
+		.replaceAll(/new Map\(\s*\)/g, '{}')
+		.replaceAll(/new Set\(\s*\)/g, '[]')
+		.replaceAll(/\bundefined\b/g, 'null');
 
 	try {
 		return JSON.parse(script);
@@ -289,7 +296,7 @@ const getWithBrowser = async (ctx, url) => {
 
 const getUser = async (ctx, url) => {
 	const cookie = ctx.env.XIAOHONGSHU_COOKIE || '';
-	const diagnostics = [];
+	const diagnostics = [`cookieConfigured=${Boolean(cookie)}`];
 
 	if (cookie) {
 		try {
