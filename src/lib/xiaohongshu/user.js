@@ -45,7 +45,68 @@ const extractInitialState = async (res) => {
 	}
 };
 
-const getUser = async (url) => {
+const normalizeNotes = (notes) => {
+	const result = [];
+
+	const walk = (value) => {
+		value = unwrap(value);
+		if (!value) {
+			return;
+		}
+		if (Array.isArray(value)) {
+			for (const item of value) {
+				walk(item);
+			}
+			return;
+		}
+		if (typeof value !== 'object') {
+			return;
+		}
+
+		const noteCard = unwrap(value.noteCard ?? value.note_card);
+		const noteId =
+			value.id ??
+			value.noteId ??
+			value.note_id ??
+			noteCard?.noteId ??
+			noteCard?.note_id ??
+			noteCard?.id;
+
+		if (noteCard || noteId) {
+			result.push(value);
+			return;
+		}
+
+		// Some Xiaohongshu SSR responses wrap note groups in data/list/items/notes.
+		for (const key of ['data', 'list', 'items', 'notes']) {
+			if (value[key]) {
+				walk(value[key]);
+			}
+		}
+	};
+
+	walk(notes);
+	return result;
+};
+
+const parseUserState = (state) => {
+	const user = unwrap(state?.user);
+	if (!user || typeof user !== 'object') {
+		return { userPageData: {}, notes: [], collect: undefined };
+	}
+
+	const userPageData = unwrap(user.userPageData ?? user.userInfo ?? {});
+	const rawNotes = unwrap(user.notes ?? userPageData?.notes ?? []);
+	const collect = unwrap(user.collect);
+
+	return {
+		userPageData: userPageData ?? {},
+		notes: normalizeNotes(rawNotes),
+		collect,
+	};
+};
+
+const getUserOnce = async (url) => {
 	const res = await fetch(url, {
 		headers: browserHeaders,
 		redirect: 'follow',
@@ -55,17 +116,39 @@ const getUser = async (url) => {
 		throw new Error(`小红书主页请求失败: HTTP ${res.status}`);
 	}
 
-	const state = await extractInitialState(res);
-	const user = unwrap(state?.user);
-	if (!user || typeof user !== 'object') {
-		throw new Error('小红书未返回用户数据，可能触发了风控或页面结构已经变化');
+	return parseUserState(await extractInitialState(res));
+};
+
+const hasProfile = (userPageData) => {
+	const page = unwrap(userPageData) ?? {};
+	const basicInfo = unwrap(page.basicInfo ?? page.basic_info ?? page.userInfo ?? page.user_info) ?? {};
+	return Boolean(basicInfo.nickname ?? basicInfo.nickName ?? basicInfo.name);
+};
+
+const getUser = async (url) => {
+	let best = null;
+	let lastError = null;
+
+	// Xiaohongshu SSR occasionally returns an empty profile/notes block to edge requests.
+	// Retry a small number of times and keep the richest response instead of failing immediately.
+	for (let attempt = 0; attempt < 3; attempt++) {
+		try {
+			const data = await getUserOnce(url);
+			if (!best || data.notes.length > best.notes.length || (!hasProfile(best.userPageData) && hasProfile(data.userPageData))) {
+				best = data;
+			}
+			if (hasProfile(data.userPageData) && data.notes.length) {
+				return data;
+			}
+		} catch (error) {
+			lastError = error;
+		}
 	}
 
-	const userPageData = unwrap(user.userPageData ?? user.userInfo ?? {});
-	const notes = unwrap(user.notes ?? userPageData?.notes ?? []);
-	const collect = unwrap(user.collect);
-
-	return { userPageData, notes, collect };
+	if (best) {
+		return best;
+	}
+	throw lastError ?? new Error('小红书未返回用户数据');
 };
 
 const getCoverUrl = (cover) => {
@@ -78,11 +161,44 @@ const getCoverUrl = (cover) => {
 	return cover.urlDefault ?? cover.url_default ?? cover.urlPre ?? cover.url_pre ?? cover.url ?? '';
 };
 
-const normalizeNotes = (notes) => {
-	if (!Array.isArray(notes)) {
-		return [];
+const toRssItem = (item, fallbackAuthor) => {
+	item = unwrap(item) ?? {};
+	const noteCard = unwrap(item.noteCard ?? item.note_card ?? item) ?? {};
+	const noteId = noteCard.noteId ?? noteCard.note_id ?? noteCard.id ?? item.id ?? item.noteId ?? item.note_id;
+	if (!noteId) {
+		return null;
 	}
-	return notes.flatMap((group) => (Array.isArray(group) ? group : [group])).filter(Boolean);
+
+	const noteUser = unwrap(noteCard.user ?? item.user) ?? {};
+	const interactInfo = unwrap(noteCard.interactInfo ?? noteCard.interact_info ?? item.interactInfo ?? item.interact_info) ?? {};
+	const displayTitle =
+		noteCard.displayTitle ??
+		noteCard.display_title ??
+		noteCard.title ??
+		noteCard.desc ??
+		item.displayTitle ??
+		item.display_title ??
+		item.title ??
+		item.desc ??
+		`小红书笔记 ${noteId}`;
+	const author = noteUser.nickname ?? noteUser.nickName ?? noteUser.nick_name ?? noteUser.name ?? fallbackAuthor;
+	const coverUrl = getCoverUrl(noteCard.cover ?? item.cover);
+	const xsecToken = item.xsecToken ?? item.xsec_token ?? noteCard.xsecToken ?? noteCard.xsec_token;
+	const noteUrl = new URL(`https://www.xiaohongshu.com/explore/${noteId}`);
+
+	if (xsecToken) {
+		noteUrl.searchParams.set('xsec_token', xsecToken);
+		noteUrl.searchParams.set('xsec_source', 'pc_user');
+	}
+
+	return {
+		title: String(displayTitle).trim() || `小红书笔记 ${noteId}`,
+		link: noteUrl.toString(),
+		guid: noteId,
+		description: `${coverUrl ? `<img src="${coverUrl}"><br>` : ''}${displayTitle}`,
+		author,
+		upvotes: interactInfo.likedCount ?? interactInfo.liked_count,
+	};
 };
 
 const deal = async (ctx) => {
@@ -94,19 +210,24 @@ const deal = async (ctx) => {
 	const basicInfo = unwrap(page.basicInfo ?? page.basic_info ?? page.userInfo ?? page.user_info) ?? {};
 	const interactions = unwrap(page.interactions) ?? [];
 	const tags = unwrap(page.tags) ?? [];
-	const normalizedNotes = normalizeNotes(notes);
 
-	const nickname = basicInfo.nickname ?? basicInfo.nickName ?? basicInfo.name;
-	if (!nickname && !normalizedNotes.length) {
-		const userKeys = Object.keys((await getUser(url)).userPageData ?? {});
+	const profileNickname = basicInfo.nickname ?? basicInfo.nickName ?? basicInfo.name;
+	const firstNote = notes[0] ? unwrap(notes[0]) : null;
+	const firstCard = firstNote ? unwrap(firstNote.noteCard ?? firstNote.note_card ?? firstNote) : null;
+	const firstUser = firstCard ? unwrap(firstCard.user ?? firstNote.user) : null;
+	const noteNickname = firstUser?.nickname ?? firstUser?.nickName ?? firstUser?.nick_name ?? firstUser?.name;
+	const feedTitle = profileNickname ?? noteNickname ?? `小红书用户 ${uid}`;
+
+	const items = notes.map((item) => toRssItem(item, feedTitle)).filter(Boolean);
+
+	if (!profileNickname && !items.length) {
 		const pageKeys = Object.keys(page ?? {});
-		const notesType = Array.isArray(notes) ? `array(length=${notes.length})` : typeof notes;
+		const noteKeys = notes.slice(0, 3).map((item) => Object.keys(unwrap(item) ?? {}).join('|'));
 		throw new Error(
-			`小红书未返回用户资料或笔记；userPageDataKeys=[${userKeys.join(',')}]; pageKeys=[${pageKeys.join(',')}]; notes=${notesType}`
+			`小红书未返回可用资料或笔记；pageKeys=[${pageKeys.join(',')}]; normalizedNotes=${notes.length}; noteKeys=[${noteKeys.join(';')}]`
 		);
 	}
 
-	const feedTitle = nickname || `小红书用户 ${uid}`;
 	const descriptionParts = [
 		basicInfo.desc ?? basicInfo.description ?? '',
 		Array.isArray(tags) ? tags.map((tag) => tag?.name).filter(Boolean).join(' ') : '',
@@ -118,44 +239,13 @@ const deal = async (ctx) => {
 			: '',
 	].filter(Boolean);
 
-	const image = basicInfo.imageb ?? basicInfo.images ?? basicInfo.avatar ?? basicInfo.image;
-
-	const items = normalizedNotes
-		.map((item) => {
-			const noteCard = unwrap(item?.noteCard ?? item?.note_card ?? item) ?? {};
-			const noteId = noteCard.noteId ?? noteCard.note_id ?? item?.id ?? item?.noteId ?? item?.note_id;
-			if (!noteId) {
-				return null;
-			}
-
-			const noteUser = unwrap(noteCard.user) ?? {};
-			const interactInfo = unwrap(noteCard.interactInfo ?? noteCard.interact_info) ?? {};
-			const displayTitle = noteCard.displayTitle ?? noteCard.display_title ?? noteCard.title ?? noteCard.desc ?? `小红书笔记 ${noteId}`;
-			const author = noteUser.nickname ?? noteUser.nickName ?? noteUser.name ?? feedTitle;
-			const coverUrl = getCoverUrl(noteCard.cover);
-			const xsecToken = item?.xsecToken ?? item?.xsec_token ?? noteCard.xsecToken ?? noteCard.xsec_token;
-			const noteUrl = new URL(`https://www.xiaohongshu.com/explore/${noteId}`);
-			if (xsecToken) {
-				noteUrl.searchParams.set('xsec_token', xsecToken);
-				noteUrl.searchParams.set('xsec_source', 'pc_user');
-			}
-
-			return {
-				title: String(displayTitle).trim() || `小红书笔记 ${noteId}`,
-				link: noteUrl.toString(),
-				guid: noteId,
-				description: `${coverUrl ? `<img src="${coverUrl}"><br>` : ''}${displayTitle}`,
-				author,
-				upvotes: interactInfo.likedCount ?? interactInfo.liked_count,
-			};
-		})
-		.filter(Boolean);
+	const image = basicInfo.imageb ?? basicInfo.images ?? basicInfo.avatar ?? basicInfo.image ?? firstUser?.avatar ?? firstUser?.image;
 
 	ctx.header('Content-Type', 'application/rss+xml; charset=UTF-8');
 	return ctx.body(
 		renderRss2({
 			title: `${feedTitle} - 笔记 • 小红书 / RED`,
-			description: descriptionParts.join(' '),
+			description: descriptionParts.join(' ') || `${feedTitle} 的小红书笔记`,
 			image,
 			link: url,
 			items,
