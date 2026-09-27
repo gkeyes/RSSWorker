@@ -11,12 +11,15 @@ RSSWorker 是一个轻量级的 RSS 订阅工具，可以部署在 Cloudflare Wo
 - telegram 频道 (/telegram/channel/:username)
 - weibo 用户 (/weibo/user/:uid)
 - 小红书用户 (/xiaohongshu/user/:uid)
+- GitHub Actions 成功运行 (/github/actions/:owner/:repo/:workflow)
 
 > 小红书更新后不能再使用小红书号，需要使用小红书用户ID。  
 > 获取方法：  
 > 移动端：用户页面 > 右上角三个点 > 复制链接 > 获取链接中的用户ID  
 > 网页端：用户页面 > 链接中的用户ID  
 > 格式：https://www.xiaohongshu.com/user/profile/5d2aec020000000012037401
+
+> GitHub Actions 路由默认只返回 `conclusion=success` 的运行记录。公开仓库可匿名读取；如需提高 GitHub API 限额，可设置 Worker Secret `GITHUB_TOKEN`。
 
 > 微博更新后需要加上Cookie
 > 获取方法（参考 https://docs.rsshub.app/zh/deploy/config#%E5%BE%AE%E5%8D%9A ） ：

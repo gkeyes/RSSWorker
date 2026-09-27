@@ -4,10 +4,11 @@ import bilibili_user_video from './lib/bilibili/user/video';
 import telegram_channel from './lib/telegram/channel';
 import weibo_user from './lib/weibo/user';
 import xiaohongshu_user from './lib/xiaohongshu/user';
+import github_actions from './lib/github/actions';
 
 const route = new Hono();
 
-let plugins = [bilibili_user_dynamic, bilibili_user_video, telegram_channel, weibo_user, xiaohongshu_user];
+let plugins = [bilibili_user_dynamic, bilibili_user_video, telegram_channel, weibo_user, xiaohongshu_user, github_actions];
 
 for (let plugin of plugins) {
 	plugin.setup(route);
