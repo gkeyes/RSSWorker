@@ -135,10 +135,16 @@ const getBrowserState = async (ctx, url) => {
 		...(cookies.length ? { cookies } : {}),
 		gotoOptions: {
 			waitUntil: 'networkidle2',
-			timeout: 30000,
+			timeout: 45000,
 		},
-		waitForTimeout: 3000,
-		rejectResourceTypes: ['image', 'media', 'font'],
+		waitForSelector: {
+			selector:
+				'#userPostedFeeds section.note-item a[href*="/explore/"], #userPostedFeeds a[href*="xsec_token"], section.note-item a[href*="/explore/"], section.note-item a[href*="/discovery/item/"]',
+			timeout: 20000,
+			visible: false,
+		},
+		waitForTimeout: 1200,
+		rejectResourceTypes: ['media', 'font'],
 		addScriptTag: [
 			{
 				content: `(() => {
@@ -275,7 +281,13 @@ const getBrowserState = async (ctx, url) => {
 	});
 
 	if (!response.ok) {
-		const detail = (await response.text()).slice(0, 300);
+		const detail = (await response.text()).slice(0, 500);
+		if (response.status === 429) {
+			throw new Error(`Browser Run 限流: HTTP 429 ${detail}`);
+		}
+		if (detail.includes('waitForSelector') || detail.toLowerCase().includes('selector')) {
+			throw new Error(`Browser Run 已打开小红书主页，但笔记区域未加载: ${detail}`);
+		}
 		throw new Error(`Browser Run 请求失败: HTTP ${response.status} ${detail}`);
 	}
 
