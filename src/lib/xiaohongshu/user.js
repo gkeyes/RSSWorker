@@ -17,6 +17,57 @@ const browserHeaders = {
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+const isContextDestroyed = (error) => {
+	const message = String(error?.message || error);
+	return (
+		message.includes('Execution context was destroyed') ||
+		message.includes('Cannot find context with specified id') ||
+		message.includes('Inspected target navigated or closed')
+	);
+};
+
+const evaluateWithNavigationRetry = async (page, fn, ...args) => {
+	let lastError;
+	for (let attempt = 0; attempt < 5; attempt++) {
+		try {
+			return await page.evaluate(fn, ...args);
+		} catch (error) {
+			lastError = error;
+			if (!isContextDestroyed(error)) throw error;
+			await sleep(500 + attempt * 350);
+		}
+	}
+	throw lastError;
+};
+
+const waitForStableUrl = async (page, { timeout = 7000, stableFor = 1200 } = {}) => {
+	const started = Date.now();
+	let lastUrl = page.url();
+	let stableSince = Date.now();
+
+	while (Date.now() - started < timeout) {
+		await sleep(300);
+		const currentUrl = page.url();
+		if (currentUrl !== lastUrl) {
+			lastUrl = currentUrl;
+			stableSince = Date.now();
+			continue;
+		}
+		if (Date.now() - stableSince >= stableFor) return currentUrl;
+	}
+
+	return page.url();
+};
+
+const safePublicUrl = (value) => {
+	try {
+		const parsed = new URL(value);
+		return parsed.origin + parsed.pathname;
+	} catch {
+		return String(value || '');
+	}
+};
+
 const normalizeNotes = (notes) => {
 	const result = [];
 
@@ -129,7 +180,7 @@ const parseBrowserCookies = (cookieString) => {
 };
 
 const extractPlainRuntimeState = async (page, uid) =>
-	page.evaluate((targetUid) => {
+	evaluateWithNavigationRetry(page, (targetUid) => {
 		const unwrapLocal = (value) => {
 			let current = value;
 			for (let i = 0; i < 8; i++) {
@@ -250,6 +301,11 @@ const getBrowserState = async (ctx, url, uid) => {
 
 		let postedPayload = null;
 		let postedUrl = '';
+		let postedSeen = false;
+		let postedStatus = null;
+		let postedRawCount = 0;
+		let postedCode = null;
+		let postedMessage = '';
 
 		await page.setRequestInterception(true);
 		page.on('request', (request) => {
@@ -271,15 +327,22 @@ const getBrowserState = async (ctx, url, uid) => {
 				return;
 			}
 
+			postedSeen = true;
+			postedStatus = response.status();
+			postedUrl = responseUrl;
+
 			try {
 				const json = await response.json();
-				const notes = normalizeNotes(json?.data?.notes ?? json?.data?.items ?? []);
+				const rawNotes = json?.data?.notes ?? json?.data?.items ?? [];
+				postedRawCount = Array.isArray(rawNotes) ? rawNotes.length : 0;
+				postedCode = json?.code ?? null;
+				postedMessage = String(json?.msg ?? json?.message ?? '').slice(0, 120);
+				const notes = normalizeNotes(rawNotes);
 				if (notes.length) {
 					postedPayload = json;
-					postedUrl = responseUrl;
 				}
 			} catch {
-				// Ignore non-JSON or consumed responses.
+				// Keep postedSeen/status even when the response body is unavailable.
 			}
 		});
 
@@ -308,37 +371,46 @@ const getBrowserState = async (ctx, url, uid) => {
 			}
 		}
 
-		await sleep(1200);
+		await waitForStableUrl(page, { timeout: 7000, stableFor: 1200 });
 
 		try {
-			await page.waitForNetworkIdle({ idleTime: 600, timeout: 5000 });
+			await page.waitForNetworkIdle({ idleTime: 600, timeout: 4000 });
 		} catch {
 			// Xiaohongshu keeps background connections open; this is best-effort.
 		}
 
+		await waitForStableUrl(page, { timeout: 3500, stableFor: 900 });
+
 		for (let step = 0; step < 4 && !postedPayload; step++) {
-			await page.evaluate((index) => {
-				const height = Math.max(document.body?.scrollHeight || 0, document.documentElement?.scrollHeight || 0);
-				window.scrollTo({ top: Math.min(height, 700 + index * 900), behavior: 'instant' });
-			}, step);
-			await sleep(1200);
+			await evaluateWithNavigationRetry(
+				page,
+				(index) => {
+					const height = Math.max(document.body?.scrollHeight || 0, document.documentElement?.scrollHeight || 0);
+					window.scrollTo({ top: Math.min(height, 700 + index * 900), behavior: 'instant' });
+				},
+				step
+			);
+			await sleep(900);
 		}
 
 		if (!postedPayload) {
 			try {
-				await page.evaluate(() => {
-					const candidates = Array.from(document.querySelectorAll('div,span,button'));
+				await evaluateWithNavigationRetry(page, () => {
+					const candidates = Array.from(document.querySelectorAll('div,span,button,a'));
 					const tab = candidates.find((element) => {
 						const text = (element.textContent || '').trim();
 						return text === '笔记' && element.getBoundingClientRect().width > 0;
 					});
 					tab?.click();
 				});
-				await sleep(1800);
-				await page.evaluate(() => window.scrollBy(0, 900));
-				await sleep(1500);
-			} catch {
-				// DOM clicking is only a fallback to trigger lazy loading.
+				await waitForStableUrl(page, { timeout: 3500, stableFor: 900 });
+				await sleep(800);
+				await evaluateWithNavigationRetry(page, () => window.scrollBy(0, 900));
+				await sleep(1200);
+			} catch (error) {
+				if (!isContextDestroyed(error)) {
+					// DOM clicking is only a fallback to trigger lazy loading.
+				}
 			}
 		}
 
@@ -355,17 +427,25 @@ const getBrowserState = async (ctx, url, uid) => {
 		}
 
 		const nickname = runtime.userPageData?.basicInfo?.nickname;
+		const finalUrl = safePublicUrl(page.url());
+		const diagnostic = [
+			`finalUrl=${finalUrl}`,
+			`userPostedSeen=${postedSeen}`,
+			`status=${postedStatus ?? 'n/a'}`,
+			`rawNotes=${postedRawCount}`,
+			`code=${postedCode ?? 'n/a'}`,
+			postedMessage ? `message=${postedMessage}` : '',
+		].filter(Boolean).join('; ');
+
 		if (nickname) {
-			throw new Error(
-				'已获取小红书用户资料，但未获取到发布笔记。当前主页可能需要有效的 xsec_token；可使用带 xsec_token 的分享主页 URL 生成订阅。'
-			);
+			throw new Error(`已获取小红书用户资料，但未获取到发布笔记；${diagnostic}`);
 		}
 
 		if (!ctx.env.XIAOHONGSHU_COOKIE) {
-			throw new Error('Browser Session 已执行，但小红书未返回用户资料；请配置 XIAOHONGSHU_COOKIE');
+			throw new Error(`Browser Session 已执行，但小红书未返回用户资料；请配置 XIAOHONGSHU_COOKIE；${diagnostic}`);
 		}
 
-		throw new Error('Browser Session 已执行，但小红书未返回用户资料；Cookie 可能已失效或触发风控');
+		throw new Error(`Browser Session 已执行，但小红书未返回用户资料；Cookie 可能已失效或触发风控；${diagnostic}`);
 	} catch (error) {
 		const message = String(error?.message || error);
 		if (message.includes('429') || message.toLowerCase().includes('rate limit')) {
