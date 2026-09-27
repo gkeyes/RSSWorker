@@ -98,7 +98,12 @@ const deal = async (ctx) => {
 
 	const nickname = basicInfo.nickname ?? basicInfo.nickName ?? basicInfo.name;
 	if (!nickname && !normalizedNotes.length) {
-		throw new Error('小红书未返回用户资料或笔记，可能触发了风控；请稍后重试');
+		const userKeys = Object.keys((await getUser(url)).userPageData ?? {});
+		const pageKeys = Object.keys(page ?? {});
+		const notesType = Array.isArray(notes) ? `array(length=${notes.length})` : typeof notes;
+		throw new Error(
+			`小红书未返回用户资料或笔记；userPageDataKeys=[${userKeys.join(',')}]; pageKeys=[${pageKeys.join(',')}]; notes=${notesType}`
+		);
 	}
 
 	const feedTitle = nickname || `小红书用户 ${uid}`;
