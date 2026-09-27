@@ -141,7 +141,6 @@ const getBrowserState = async (ctx, url) => {
 			selector:
 				'#userPostedFeeds section.note-item a[href*="/explore/"], #userPostedFeeds a[href*="xsec_token"], section.note-item a[href*="/explore/"], section.note-item a[href*="/discovery/item/"]',
 			timeout: 20000,
-			visible: false,
 		},
 		waitForTimeout: 1200,
 		rejectResourceTypes: ['media', 'font'],
