@@ -89,10 +89,27 @@ const normalizeNotes = (notes) => {
 	return result;
 };
 
+const summarizeShape = (value, depth = 0) => {
+	value = unwrap(value);
+	if (value === null) return 'null';
+	if (value === undefined) return 'undefined';
+	if (Array.isArray(value)) {
+		if (depth >= 2) return `array(${value.length})`;
+		return `array(${value.length})[${value.slice(0, 5).map((item) => summarizeShape(item, depth + 1)).join(',')}]`;
+	}
+	if (typeof value !== 'object') return typeof value;
+	const keys = Object.keys(value).slice(0, 12);
+	if (depth >= 2) return `object{${keys.join('|')}}`;
+	const interesting = ['data', 'list', 'items', 'notes', 'noteCard', 'note_card', '_rawValue', '_value']
+		.filter((key) => key in value)
+		.map((key) => `${key}=${summarizeShape(value[key], depth + 1)}`);
+	return `object{${keys.join('|')}}${interesting.length ? `<${interesting.join(',')}>` : ''}`;
+};
+
 const parseUserState = (state) => {
 	const user = unwrap(state?.user);
 	if (!user || typeof user !== 'object') {
-		return { userPageData: {}, notes: [], collect: undefined };
+		return { userPageData: {}, notes: [], collect: undefined, rawNotesShape: 'missing-user' };
 	}
 
 	const userPageData = unwrap(user.userPageData ?? user.userInfo ?? {});
@@ -103,6 +120,7 @@ const parseUserState = (state) => {
 		userPageData: userPageData ?? {},
 		notes: normalizeNotes(rawNotes),
 		collect,
+		rawNotesShape: summarizeShape(rawNotes),
 	};
 };
 
@@ -128,12 +146,14 @@ const hasProfile = (userPageData) => {
 const getUser = async (url) => {
 	let best = null;
 	let lastError = null;
+	const shapes = [];
 
 	// Xiaohongshu SSR occasionally returns an empty profile/notes block to edge requests.
 	// Retry a small number of times and keep the richest response instead of failing immediately.
 	for (let attempt = 0; attempt < 3; attempt++) {
 		try {
 			const data = await getUserOnce(url);
+			shapes.push(data.rawNotesShape);
 			if (!best || data.notes.length > best.notes.length || (!hasProfile(best.userPageData) && hasProfile(data.userPageData))) {
 				best = data;
 			}
@@ -146,7 +166,7 @@ const getUser = async (url) => {
 	}
 
 	if (best) {
-		return best;
+		return { ...best, attemptShapes: shapes };
 	}
 	throw lastError ?? new Error('小红书未返回用户数据');
 };
@@ -204,7 +224,7 @@ const toRssItem = (item, fallbackAuthor) => {
 const deal = async (ctx) => {
 	const { uid } = ctx.req.param();
 	const url = `https://www.xiaohongshu.com/user/profile/${uid}`;
-	const { userPageData, notes } = await getUser(url);
+	const { userPageData, notes, attemptShapes = [] } = await getUser(url);
 
 	const page = unwrap(userPageData) ?? {};
 	const basicInfo = unwrap(page.basicInfo ?? page.basic_info ?? page.userInfo ?? page.user_info) ?? {};
@@ -224,7 +244,7 @@ const deal = async (ctx) => {
 		const pageKeys = Object.keys(page ?? {});
 		const noteKeys = notes.slice(0, 3).map((item) => Object.keys(unwrap(item) ?? {}).join('|'));
 		throw new Error(
-			`小红书未返回可用资料或笔记；pageKeys=[${pageKeys.join(',')}]; normalizedNotes=${notes.length}; noteKeys=[${noteKeys.join(';')}]`
+			`小红书未返回可用资料或笔记；pageKeys=[${pageKeys.join(',')}]; normalizedNotes=${notes.length}; noteKeys=[${noteKeys.join(';')}]; rawNotesShapes=[${attemptShapes.join(' || ')}]`
 		);
 	}
 
