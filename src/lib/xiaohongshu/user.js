@@ -143,7 +143,64 @@ const getBrowserState = async (ctx, url) => {
 			{
 				content: `(() => {
 					try {
-						const value = JSON.stringify(window.__INITIAL_STATE__ || {});
+						const unwrap = (value) => {
+							let current = value;
+							for (let i = 0; i < 6; i++) {
+								if (!current || typeof current !== 'object') break;
+								if ('_rawValue' in current && current._rawValue !== current) {
+									current = current._rawValue;
+									continue;
+								}
+								if ('_value' in current && current._value !== current) {
+									current = current._value;
+									continue;
+								}
+								break;
+							}
+							return current;
+						};
+
+						const sanitize = (value, seen = new WeakSet(), depth = 0) => {
+							value = unwrap(value);
+							if (value === null || value === undefined) return value;
+							if (typeof value !== 'object') return value;
+							if (depth > 10) return null;
+							if (seen.has(value)) return undefined;
+							seen.add(value);
+
+							if (Array.isArray(value)) {
+								return value.map((item) => sanitize(item, seen, depth + 1)).filter((item) => item !== undefined);
+							}
+
+							const out = {};
+							const blocked = new Set([
+								'dep',
+								'effect',
+								'computed',
+								'__v_raw',
+								'__v_skip',
+								'_setter',
+								'_getter',
+							]);
+							for (const key of Object.keys(value)) {
+								if (blocked.has(key)) continue;
+								try {
+									const cleaned = sanitize(value[key], seen, depth + 1);
+									if (cleaned !== undefined) out[key] = cleaned;
+								} catch {}
+							}
+							return out;
+						};
+
+						const initial = window.__INITIAL_STATE__ || {};
+						const user = unwrap(initial.user) || {};
+						const picked = {
+							user: {
+								userPageData: sanitize(user.userPageData ?? user.userInfo ?? {}),
+								notes: sanitize(user.notes ?? user.userPageData?.notes ?? []),
+							},
+						};
+						const value = JSON.stringify(picked);
 						document.documentElement.setAttribute('data-rss-xhs-state', encodeURIComponent(value));
 					} catch (error) {
 						document.documentElement.setAttribute('data-rss-xhs-error', encodeURIComponent(String(error)));
