@@ -391,10 +391,26 @@ const deal = async (ctx) => {
 	}
 
 	const pageUrl = new URL(`https://www.xiaohongshu.com/user/profile/${uid}`);
-	const xsecToken = ctx.req.query('xsec_token');
-	if (xsecToken) {
-		pageUrl.searchParams.set('xsec_token', xsecToken);
-		pageUrl.searchParams.set('xsec_source', ctx.req.query('xsec_source') || 'app_share');
+
+	// Preserve the public share context. Xiaohongshu's anonymous profile access can
+	// depend on more than xsec_token alone (for example shareRedId/apptime/share_id).
+	const shareParams = [
+		'xsec_token',
+		'xsec_source',
+		'xhsshare',
+		'shareRedId',
+		'apptime',
+		'share_id',
+		'share_channel',
+	];
+	for (const key of shareParams) {
+		const value = ctx.req.query(key);
+		if (value !== undefined && value !== null) {
+			pageUrl.searchParams.set(key, value);
+		}
+	}
+	if (pageUrl.searchParams.has('xsec_token') && !pageUrl.searchParams.has('xsec_source')) {
+		pageUrl.searchParams.set('xsec_source', 'app_share');
 	}
 
 	const { userPageData, notes } = await getUser(ctx, pageUrl.toString());
