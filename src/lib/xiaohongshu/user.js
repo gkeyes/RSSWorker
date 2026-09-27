@@ -11,57 +11,19 @@ const browserHeaders = {
 	'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
 };
 
-const extractInitialState = async (res) => {
-	const scripts = [];
-	const rewriter = new HTMLRewriter()
-		.on('script', {
-			element() {
-				scripts.push('');
-			},
-			text(text) {
-				if (scripts.length) {
-					scripts[scripts.length - 1] += text.text;
-				}
-			},
-		})
-		.transform(res);
-
-	await rewriter.text();
-
-	const marker = 'window.__INITIAL_STATE__=';
-	const source = scripts.find((script) => script.includes(marker));
-	if (!source) {
-		throw new Error('小红书未返回 __INITIAL_STATE__，可能触发了风控或页面结构已经变化');
-	}
-
-	let script = source.slice(source.indexOf(marker) + marker.length).trim();
-	script = script.replace(/;\s*$/, '');
-	script = script.replaceAll(/new Map\(\s*\[\s*\]\s*\)/g, 'null').replaceAll(/\bundefined\b/g, 'null');
-
-	try {
-		return JSON.parse(script);
-	} catch (error) {
-		throw new Error(`小红书初始化数据解析失败: ${error.message}`);
-	}
-};
-
 const normalizeNotes = (notes) => {
 	const result = [];
 
 	const walk = (value) => {
 		value = unwrap(value);
-		if (!value) {
-			return;
-		}
+		if (!value) return;
+
 		if (Array.isArray(value)) {
-			for (const item of value) {
-				walk(item);
-			}
+			for (const item of value) walk(item);
 			return;
 		}
-		if (typeof value !== 'object') {
-			return;
-		}
+
+		if (typeof value !== 'object') return;
 
 		const noteCard = unwrap(value.noteCard ?? value.note_card);
 		const noteId =
@@ -77,11 +39,8 @@ const normalizeNotes = (notes) => {
 			return;
 		}
 
-		// Some Xiaohongshu SSR responses wrap note groups in data/list/items/notes.
 		for (const key of ['data', 'list', 'items', 'notes']) {
-			if (value[key]) {
-				walk(value[key]);
-			}
+			if (value[key]) walk(value[key]);
 		}
 	};
 
@@ -89,42 +48,50 @@ const normalizeNotes = (notes) => {
 	return result;
 };
 
-const summarizeShape = (value, depth = 0) => {
-	value = unwrap(value);
-	if (value === null) return 'null';
-	if (value === undefined) return 'undefined';
-	if (Array.isArray(value)) {
-		if (depth >= 2) return `array(${value.length})`;
-		return `array(${value.length})[${value.slice(0, 5).map((item) => summarizeShape(item, depth + 1)).join(',')}]`;
-	}
-	if (typeof value !== 'object') return typeof value;
-	const keys = Object.keys(value).slice(0, 12);
-	if (depth >= 2) return `object{${keys.join('|')}}`;
-	const interesting = ['data', 'list', 'items', 'notes', 'noteCard', 'note_card', '_rawValue', '_value']
-		.filter((key) => key in value)
-		.map((key) => `${key}=${summarizeShape(value[key], depth + 1)}`);
-	return `object{${keys.join('|')}}${interesting.length ? `<${interesting.join(',')}>` : ''}`;
-};
-
 const parseUserState = (state) => {
 	const user = unwrap(state?.user);
 	if (!user || typeof user !== 'object') {
-		return { userPageData: {}, notes: [], collect: undefined, rawNotesShape: 'missing-user' };
+		return { userPageData: {}, notes: [] };
 	}
 
-	const userPageData = unwrap(user.userPageData ?? user.userInfo ?? {});
+	const userPageData = unwrap(user.userPageData ?? user.userInfo ?? {}) ?? {};
 	const rawNotes = unwrap(user.notes ?? userPageData?.notes ?? []);
-	const collect = unwrap(user.collect);
 
 	return {
-		userPageData: userPageData ?? {},
+		userPageData,
 		notes: normalizeNotes(rawNotes),
-		collect,
-		rawNotesShape: summarizeShape(rawNotes),
 	};
 };
 
-const getUserOnce = async (url) => {
+const extractInitialState = async (res) => {
+	const scripts = [];
+	const rewriter = new HTMLRewriter()
+		.on('script', {
+			element() {
+				scripts.push('');
+			},
+			text(text) {
+				if (scripts.length) scripts[scripts.length - 1] += text.text;
+			},
+		})
+		.transform(res);
+
+	await rewriter.text();
+
+	const marker = 'window.__INITIAL_STATE__=';
+	const source = scripts.find((script) => script.includes(marker));
+	if (!source) {
+		throw new Error('小红书未返回 __INITIAL_STATE__');
+	}
+
+	let script = source.slice(source.indexOf(marker) + marker.length).trim();
+	script = script.replace(/;\s*$/, '');
+	script = script.replaceAll(/new Map\(\s*\[\s*\]\s*\)/g, 'null').replaceAll(/\bundefined\b/g, 'null');
+
+	return JSON.parse(script);
+};
+
+const getStaticState = async (url) => {
 	const res = await fetch(url, {
 		headers: browserHeaders,
 		redirect: 'follow',
@@ -137,38 +104,106 @@ const getUserOnce = async (url) => {
 	return parseUserState(await extractInitialState(res));
 };
 
-const hasProfile = (userPageData) => {
-	const page = unwrap(userPageData) ?? {};
-	const basicInfo = unwrap(page.basicInfo ?? page.basic_info ?? page.userInfo ?? page.user_info) ?? {};
-	return Boolean(basicInfo.nickname ?? basicInfo.nickName ?? basicInfo.name);
+const parseBrowserCookies = (cookieString) => {
+	if (!cookieString) return [];
+
+	return cookieString
+		.split(';')
+		.map((part) => {
+			const index = part.indexOf('=');
+			if (index <= 0) return null;
+			return {
+				name: part.slice(0, index).trim(),
+				value: part.slice(index + 1).trim(),
+				domain: '.xiaohongshu.com',
+				path: '/',
+			};
+		})
+		.filter((item) => item?.name);
 };
 
-const getUser = async (url) => {
-	let best = null;
-	let lastError = null;
-	const shapes = [];
-
-	// Xiaohongshu SSR occasionally returns an empty profile/notes block to edge requests.
-	// Retry a small number of times and keep the richest response instead of failing immediately.
-	for (let attempt = 0; attempt < 3; attempt++) {
-		try {
-			const data = await getUserOnce(url);
-			shapes.push(data.rawNotesShape);
-			if (!best || data.notes.length > best.notes.length || (!hasProfile(best.userPageData) && hasProfile(data.userPageData))) {
-				best = data;
-			}
-			if (hasProfile(data.userPageData) && data.notes.length) {
-				return data;
-			}
-		} catch (error) {
-			lastError = error;
-		}
+const getBrowserState = async (ctx, url) => {
+	if (!ctx.env?.BROWSER?.quickAction) {
+		throw new Error('Cloudflare Browser Run binding 不可用');
 	}
 
-	if (best) {
-		return { ...best, attemptShapes: shapes };
+	const cookieString = ctx.env.XIAOHONGSHU_COOKIE || '';
+	const cookies = parseBrowserCookies(cookieString);
+
+	const response = await ctx.env.BROWSER.quickAction('content', {
+		url,
+		...(cookies.length ? { cookies } : {}),
+		gotoOptions: {
+			waitUntil: 'networkidle2',
+			timeout: 30000,
+		},
+		waitForTimeout: 3000,
+		rejectResourceTypes: ['image', 'media', 'font'],
+		addScriptTag: [
+			{
+				content: `(() => {
+					try {
+						const value = JSON.stringify(window.__INITIAL_STATE__ || {});
+						document.documentElement.setAttribute('data-rss-xhs-state', encodeURIComponent(value));
+					} catch (error) {
+						document.documentElement.setAttribute('data-rss-xhs-error', encodeURIComponent(String(error)));
+					}
+				})();`,
+			},
+		],
+	});
+
+	if (!response.ok) {
+		const detail = (await response.text()).slice(0, 300);
+		throw new Error(`Browser Run 请求失败: HTTP ${response.status} ${detail}`);
 	}
-	throw lastError ?? new Error('小红书未返回用户数据');
+
+	const payload = await response.json();
+	if (!payload?.success || typeof payload.result !== 'string') {
+		throw new Error('Browser Run 未返回可解析的 HTML');
+	}
+
+	const html = payload.result;
+	const match = html.match(/data-rss-xhs-state="([^"]*)"/);
+	if (!match) {
+		const errorMatch = html.match(/data-rss-xhs-error="([^"]*)"/);
+		const detail = errorMatch ? decodeURIComponent(errorMatch[1]) : '未找到运行时状态';
+		throw new Error(`Browser Run 无法读取小红书运行时数据: ${detail}`);
+	}
+
+	let state;
+	try {
+		state = JSON.parse(decodeURIComponent(match[1]));
+	} catch (error) {
+		throw new Error(`Browser Run 小红书状态解析失败: ${error.message}`);
+	}
+
+	return parseUserState(state);
+};
+
+const hasUsefulData = ({ userPageData, notes }) => {
+	const page = unwrap(userPageData) ?? {};
+	const basicInfo = unwrap(page.basicInfo ?? page.basic_info ?? page.userInfo ?? page.user_info) ?? {};
+	const nickname = basicInfo.nickname ?? basicInfo.nickName ?? basicInfo.name;
+	return Boolean(nickname || notes.length);
+};
+
+const getUser = async (ctx, url) => {
+	try {
+		const staticData = await getStaticState(url);
+		if (hasUsefulData(staticData)) return staticData;
+	} catch {
+		// Static SSR is only a fast path. Browser Run is the authoritative fallback.
+	}
+
+	const browserData = await getBrowserState(ctx, url);
+	if (hasUsefulData(browserData)) return browserData;
+
+	if (!ctx.env.XIAOHONGSHU_COOKIE) {
+		throw new Error('Browser Run 已执行，但小红书仍返回空用户数据；请配置 XIAOHONGSHU_COOKIE 登录态');
+	}
+
+	throw new Error('Browser Run 已执行，但小红书仍返回空用户数据；XIAOHONGSHU_COOKIE 可能已失效');
 };
 
 const getCoverUrl = (cover) => {
@@ -185,9 +220,7 @@ const toRssItem = (item, fallbackAuthor) => {
 	item = unwrap(item) ?? {};
 	const noteCard = unwrap(item.noteCard ?? item.note_card ?? item) ?? {};
 	const noteId = noteCard.noteId ?? noteCard.note_id ?? noteCard.id ?? item.id ?? item.noteId ?? item.note_id;
-	if (!noteId) {
-		return null;
-	}
+	if (!noteId) return null;
 
 	const noteUser = unwrap(noteCard.user ?? item.user) ?? {};
 	const interactInfo = unwrap(noteCard.interactInfo ?? noteCard.interact_info ?? item.interactInfo ?? item.interact_info) ?? {};
@@ -201,6 +234,7 @@ const toRssItem = (item, fallbackAuthor) => {
 		item.title ??
 		item.desc ??
 		`小红书笔记 ${noteId}`;
+
 	const author = noteUser.nickname ?? noteUser.nickName ?? noteUser.nick_name ?? noteUser.name ?? fallbackAuthor;
 	const coverUrl = getCoverUrl(noteCard.cover ?? item.cover);
 	const xsecToken = item.xsecToken ?? item.xsec_token ?? noteCard.xsecToken ?? noteCard.xsec_token;
@@ -223,9 +257,15 @@ const toRssItem = (item, fallbackAuthor) => {
 
 const deal = async (ctx) => {
 	const { uid } = ctx.req.param();
-	const url = `https://www.xiaohongshu.com/user/profile/${uid}`;
-	const { userPageData, notes, attemptShapes = [] } = await getUser(url);
+	const pageUrl = new URL(`https://www.xiaohongshu.com/user/profile/${uid}`);
+	const xsecToken = ctx.req.query('xsec_token');
 
+	if (xsecToken) {
+		pageUrl.searchParams.set('xsec_token', xsecToken);
+		pageUrl.searchParams.set('xsec_source', ctx.req.query('xsec_source') || 'app_share');
+	}
+
+	const { userPageData, notes } = await getUser(ctx, pageUrl.toString());
 	const page = unwrap(userPageData) ?? {};
 	const basicInfo = unwrap(page.basicInfo ?? page.basic_info ?? page.userInfo ?? page.user_info) ?? {};
 	const interactions = unwrap(page.interactions) ?? [];
@@ -239,13 +279,8 @@ const deal = async (ctx) => {
 	const feedTitle = profileNickname ?? noteNickname ?? `小红书用户 ${uid}`;
 
 	const items = notes.map((item) => toRssItem(item, feedTitle)).filter(Boolean);
-
 	if (!profileNickname && !items.length) {
-		const pageKeys = Object.keys(page ?? {});
-		const noteKeys = notes.slice(0, 3).map((item) => Object.keys(unwrap(item) ?? {}).join('|'));
-		throw new Error(
-			`小红书未返回可用资料或笔记；pageKeys=[${pageKeys.join(',')}]; normalizedNotes=${notes.length}; noteKeys=[${noteKeys.join(';')}]; rawNotesShapes=[${attemptShapes.join(' || ')}]`
-		);
+		throw new Error('小红书运行时状态存在，但没有可用的用户资料或笔记');
 	}
 
 	const descriptionParts = [
@@ -259,7 +294,13 @@ const deal = async (ctx) => {
 			: '',
 	].filter(Boolean);
 
-	const image = basicInfo.imageb ?? basicInfo.images ?? basicInfo.avatar ?? basicInfo.image ?? firstUser?.avatar ?? firstUser?.image;
+	const image =
+		basicInfo.imageb ??
+		basicInfo.images ??
+		basicInfo.avatar ??
+		basicInfo.image ??
+		firstUser?.avatar ??
+		firstUser?.image;
 
 	ctx.header('Content-Type', 'application/rss+xml; charset=UTF-8');
 	return ctx.body(
@@ -267,7 +308,7 @@ const deal = async (ctx) => {
 			title: `${feedTitle} - 笔记 • 小红书 / RED`,
 			description: descriptionParts.join(' ') || `${feedTitle} 的小红书笔记`,
 			image,
-			link: url,
+			link: `https://www.xiaohongshu.com/user/profile/${uid}`,
 			items,
 		})
 	);
