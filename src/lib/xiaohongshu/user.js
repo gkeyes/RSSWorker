@@ -97,9 +97,52 @@ const parseInitialStateText = (scriptText) => {
 	}
 };
 
+const extractHomeCardLinks = (html) => {
+	const links = new Map();
+	const sectionPattern = /<section\\b([^>]*)class=(["'])[^"']*\\bnote-item\\b[^"']*\\2([^>]*)>([\\s\\S]*?)<\\/section>/gi;
+	let sectionMatch;
+
+	while ((sectionMatch = sectionPattern.exec(html))) {
+		const attrs = `${sectionMatch[1]} ${sectionMatch[3]}`;
+		const indexMatch = attrs.match(/data-index=(["'])(\\d+)\\1/i);
+		if (!indexMatch) continue;
+
+		const body = sectionMatch[4];
+		const hrefMatch = body.match(
+			/<a\\b[^>]*class=(["'])[^"']*\\bcover\\b[^"']*\\1[^>]*href=(["'])([^"']+)\\2/i
+		) || body.match(/<a\\b[^>]*href=(["'])([^"']*(?:\\/explore\\/|\\/discovery\\/item\\/|xsec_token=)[^"']*)\\1/i);
+
+		if (!hrefMatch) continue;
+		const href = hrefMatch.length >= 4 ? hrefMatch[3] : hrefMatch[2];
+		links.set(Number(indexMatch[2]), href);
+	}
+
+	return links;
+};
+
+const extractNoteIdFromUrl = (href) => {
+	if (!href) return '';
+	try {
+		const parsed = new URL(href, 'https://www.xiaohongshu.com');
+		const parts = parsed.pathname.split('/').filter(Boolean);
+		let noteId = '';
+
+		if (parts[0] === 'explore' && parts.length >= 2) {
+			noteId = parts[1];
+		} else if (parts[0] === 'discovery' && parts[1] === 'item' && parts.length >= 3) {
+			noteId = parts[2];
+		} else if (parts[0] === 'user' && parts[1] === 'profile' && parts.length >= 4) {
+			noteId = parts[3];
+		}
+
+		return /^[0-9a-f]{24}$/i.test(noteId) ? noteId : '';
+	} catch {
+		return '';
+	}
+};
+
 const extractPage = async (html) => {
 	let scriptText = '';
-	const tokenizedPaths = new Map();
 
 	const rewriter = new HTMLRewriter()
 		.on('script', {
@@ -108,14 +151,6 @@ const extractPage = async (html) => {
 				if (text.text.includes('window.__INITIAL_STATE__=') || scriptText) {
 					scriptText += text.text;
 				}
-			},
-		})
-		.on('a', {
-			element(element) {
-				const href = element.getAttribute('href') || '';
-				if (!href.includes('xsec_token=')) return;
-				const match = href.match(/\/([0-9a-f]{24})(?:\?|$)/i);
-				if (match) tokenizedPaths.set(match[1], href);
 			},
 		})
 		.transform(new Response(html, { headers: { 'Content-Type': 'text/html; charset=UTF-8' } }));
@@ -133,23 +168,54 @@ const extractPage = async (html) => {
 	}
 
 	const userPageData = unwrap(user.userPageData ?? user.userInfo ?? {}) ?? {};
-	const notes = normalizeNotes(unwrap(user.notes ?? userPageData?.notes ?? []));
+	const rawNotes = unwrap(user.notes ?? userPageData?.notes ?? []);
+	const activeTab = unwrap(user.activeTab) ?? {};
+	const activeIndex = Number.isInteger(activeTab.index) ? activeTab.index : 0;
 
-	for (const item of notes) {
+	let selectedNotes = rawNotes;
+	if (Array.isArray(rawNotes) && rawNotes.length && rawNotes.every((row) => Array.isArray(row))) {
+		selectedNotes = rawNotes[activeIndex] ?? rawNotes.find((row) => Array.isArray(row) && row.length) ?? [];
+	}
+
+	const notes = normalizeNotes(selectedNotes);
+	const cardLinks = extractHomeCardLinks(html);
+
+	for (let index = 0; index < notes.length; index++) {
+		const item = notes[index];
 		const noteCard = unwrap(item.noteCard ?? item.note_card ?? item) ?? {};
-		const noteId = item.id ?? item.noteId ?? item.note_id ?? noteCard.noteId ?? noteCard.note_id ?? noteCard.id;
-		const path = noteId ? tokenizedPaths.get(String(noteId)) : '';
-		if (!path) continue;
+		let noteId = item.id ?? item.noteId ?? item.note_id ?? noteCard.noteId ?? noteCard.note_id ?? noteCard.id;
+		const href = cardLinks.get(index) || '';
+		const hrefNoteId = extractNoteIdFromUrl(href);
 
+		if (!noteId && hrefNoteId) {
+			item.id = hrefNoteId;
+			noteId = hrefNoteId;
+			if (item.noteCard && !item.noteCard.noteId && !item.noteCard.note_id) {
+				item.noteCard.noteId = hrefNoteId;
+			}
+		}
+
+		if (!href) continue;
 		try {
-			const parsed = new URL(path, 'https://www.xiaohongshu.com');
-			item.xsecToken = parsed.searchParams.get('xsec_token') || item.xsecToken || item.xsec_token || '';
+			const parsed = new URL(href, 'https://www.xiaohongshu.com');
+			const token = parsed.searchParams.get('xsec_token') || '';
+			if (token) {
+				item.xsecToken = item.xsecToken || item.xsec_token || token;
+				if (item.noteCard && !item.noteCard.xsecToken && !item.noteCard.xsec_token) {
+					item.noteCard.xsecToken = token;
+				}
+			}
 		} catch {
-			// Tokenized link enrichment is optional.
+			// Card-link enrichment is optional.
 		}
 	}
 
-	return { userPageData, notes };
+	return {
+		userPageData,
+		notes,
+		activeIndex,
+		cardLinkCount: cardLinks.size,
+	};
 };
 
 const getBasicInfo = (userPageData) => {
