@@ -115,7 +115,7 @@ const extractHomeCardLinks = (html) => {
 	let sectionMatch;
 
 	while ((sectionMatch = sectionPattern.exec(html))) {
-		const attrs = \`\${sectionMatch[1]} \${sectionMatch[3]}\`;
+		const attrs = String(sectionMatch[1] || '') + ' ' + String(sectionMatch[3] || '');
 		const indexMatch = attrs.match(/data-index=(["'])(\d+)\1/i);
 		if (!indexMatch) continue;
 
