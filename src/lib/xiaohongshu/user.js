@@ -391,28 +391,6 @@ const getWithBrowser = async (ctx, url) => {
 		const page = await browser.newPage();
 		await page.setUserAgent(USER_AGENT);
 
-		const networkDebug = {
-			apiResponses: [],
-			userPostedSeen: false,
-			userPostedStatus: null,
-			userPostedNotes: null,
-			userPostedFirstKeys: [],
-		};
-		page.on('response', (response) => {
-			try {
-				const parsed = new URL(response.url());
-				if (
-					(parsed.hostname.endsWith('xiaohongshu.com') || parsed.hostname.endsWith('xhscdn.com')) &&
-					parsed.pathname.includes('/api/')
-				) {
-					const key = `${parsed.hostname}${parsed.pathname}`;
-					if (!networkDebug.apiResponses.some((item) => item.path === key) && networkDebug.apiResponses.length < 40) {
-						networkDebug.apiResponses.push({ path: key, status: response.status() });
-					}
-				}
-			} catch {}
-		});
-
 		await page.setRequestInterception(true);
 		page.on('request', (request) => {
 			const type = request.resourceType();
@@ -422,10 +400,6 @@ const getWithBrowser = async (ctx, url) => {
 				request.abort();
 			}
 		});
-
-		const postedResponsePromise = page
-			.waitForResponse((response) => response.url().includes('/api/sns/web/v1/user_posted'), { timeout: 8000 })
-			.catch(() => null);
 
 		try {
 			await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 });
@@ -458,31 +432,7 @@ const getWithBrowser = async (ctx, url) => {
 			throw new Error('匿名 Browser Run 已打开主页，但没有用户资料');
 		}
 
-		const postedResponse = await postedResponsePromise;
-		if (postedResponse) {
-			networkDebug.userPostedSeen = true;
-			networkDebug.userPostedStatus = postedResponse.status();
-			try {
-				const payload = await postedResponse.json();
-				const rawApiNotes = payload?.data?.notes ?? [];
-				const apiNotes = normalizeNotes(rawApiNotes);
-				networkDebug.userPostedNotes = apiNotes.length;
-				const first = Array.isArray(rawApiNotes) ? rawApiNotes[0] : null;
-				if (first && typeof first === 'object') networkDebug.userPostedFirstKeys = Object.keys(first).slice(0, 30);
-				if (payload?.success !== false && payload?.code !== -1 && apiNotes.length) {
-					return {
-						...data,
-						notes: apiNotes,
-						source: 'browser-user-posted',
-						browserDebug: networkDebug,
-					};
-				}
-			} catch {
-				// Fall back to rendered SSR state when the response body is unavailable.
-			}
-		}
-
-		return { ...data, browserDebug: networkDebug };
+		return data;
 	} finally {
 		if (browser) {
 			try {
@@ -494,38 +444,23 @@ const getWithBrowser = async (ctx, url) => {
 	}
 };
 
-const getNoteId = (item) => {
-	item = unwrap(item) ?? {};
-	const noteCard = unwrap(item.noteCard ?? item.note_card ?? item) ?? {};
-	return noteCard.noteId ?? noteCard.note_id ?? noteCard.id ?? item.id ?? item.noteId ?? item.note_id ?? '';
-};
-
-const hasRealNoteId = (notes) => Array.isArray(notes) && notes.some((item) => /^[0-9a-f]{24}$/i.test(String(getNoteId(item))));
-
 const getUser = async (ctx, url) => {
 	const diagnostics = [];
 	const parsedUrl = new URL(url);
 	const hasXsecToken = Boolean(parsedUrl.searchParams.get('xsec_token'));
-	let staticFallback = null;
 
 	try {
 		const data = await getWithoutCookie(url);
-		if (data.notes.length) {
-			if (hasRealNoteId(data.notes)) {
-				return { ...data, source: hasXsecToken ? 'token-fetch' : 'plain-fetch' };
-			}
-			staticFallback = data;
-			diagnostics.push(`fetch=redacted-notes(${data.notes.length})`);
-		} else {
-			const summary = data.debugSummary ? JSON.stringify(data.debugSummary) : '';
-			diagnostics.push(`${hasProfile(data) ? 'fetch=profile-only' : 'fetch=empty'}${summary ? ':' + summary : ''}`);
-		}
+		if (data.notes.length) return { ...data, source: hasXsecToken ? 'token-fetch' : 'plain-fetch' };
+		const summary = data.debugSummary ? JSON.stringify(data.debugSummary) : '';
+		diagnostics.push(`${hasProfile(data) ? 'fetch=profile-only' : 'fetch=empty'}${summary ? ':' + summary : ''}`);
 	} catch (error) {
 		diagnostics.push(`fetch=${String(error?.message || error)}`);
 	}
 
+	// Anonymous bare-UID profile crawling is heavily rate-limited by Xiaohongshu.
+	// Do not burn Browser Run time when the request has no public xsec_token context.
 	if (!hasXsecToken) {
-		if (staticFallback) return { ...staticFallback, source: 'plain-fetch-redacted' };
 		throw new Error(
 			`匿名模式下裸 UID 未返回发布笔记；请使用带 xsec_token 的公开小红书用户主页/分享链接。诊断：${diagnostics.join(' | ')}`
 		);
@@ -533,22 +468,15 @@ const getUser = async (ctx, url) => {
 
 	try {
 		const data = await getWithBrowser(ctx, url);
-		if (data.notes.length) {
-			if (hasRealNoteId(data.notes)) return { ...data, source: data.source || 'token-browser' };
-			diagnostics.push(`browser=redacted-notes(${data.notes.length})`);
-			if (staticFallback) staticFallback.browserDebug = data.browserDebug ?? null;
-			else staticFallback = data;
-		} else {
-			const summary = data.debugSummary ? JSON.stringify(data.debugSummary) : '';
-			diagnostics.push(`${hasProfile(data) ? 'browser=profile-only' : 'browser=empty'}${summary ? ':' + summary : ''}`);
-		}
+		if (data.notes.length) return { ...data, source: 'token-browser' };
+		const summary = data.debugSummary ? JSON.stringify(data.debugSummary) : '';
+		diagnostics.push(`${hasProfile(data) ? 'browser=profile-only' : 'browser=empty'}${summary ? ':' + summary : ''}`);
 	} catch (error) {
 		const message = String(error?.message || error);
 		if (message.includes('风控校验已触发')) throw error;
 		diagnostics.push(`browser=${message}`);
 	}
 
-	if (staticFallback) return { ...staticFallback, source: 'token-redacted-fallback' };
 	throw new Error(`匿名 xsec_token 模式仍未抓到发布笔记；${diagnostics.join(' | ')}`);
 };
 
@@ -679,16 +607,7 @@ const deal = async (ctx) => {
 	}
 
 	const userResult = await getUser(ctx, pageUrl.toString());
-	const { userPageData, notes, source, debugSummary, browserDebug } = userResult;
-	if (ctx.req.query('debug') === '1') {
-		return ctx.json({
-			source: source ?? 'unknown',
-			notesLength: notes.length,
-			hasRealNoteId: hasRealNoteId(notes),
-			debugSummary: debugSummary ?? null,
-			browserDebug: browserDebug ?? null,
-		});
-	}
+	const { userPageData, notes, source, debugSummary } = userResult;
 	const page = unwrap(userPageData) ?? {};
 	const basicInfo = getBasicInfo(userPageData);
 	const interactions = unwrap(page.interactions) ?? [];
