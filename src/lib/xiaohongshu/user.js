@@ -521,7 +521,8 @@ const deal = async (ctx) => {
 		pageUrl.searchParams.set('xsec_source', 'app_share');
 	}
 
-	const { userPageData, notes } = await getUser(ctx, pageUrl.toString());
+	const userResult = await getUser(ctx, pageUrl.toString());
+	const { userPageData, notes, source, debugSummary } = userResult;
 	const page = unwrap(userPageData) ?? {};
 	const basicInfo = getBasicInfo(userPageData);
 	const interactions = unwrap(page.interactions) ?? [];
@@ -536,7 +537,16 @@ const deal = async (ctx) => {
 
 	const items = notes.map((item) => toRssItem(item, feedTitle)).filter(Boolean);
 	if (!items.length) {
-		throw new Error('小红书用户资料已获取，但没有可用于 RSS 的笔记条目');
+		const sample = notes[0] ?? {};
+		const card = unwrap(sample.noteCard ?? sample.note_card ?? sample) ?? {};
+		const detail = {
+			source: source ?? 'unknown',
+			notesLength: notes.length,
+			debugSummary: debugSummary ?? null,
+			sampleItemKeys: sample && typeof sample === 'object' ? Object.keys(sample).slice(0, 40) : [],
+			sampleCardKeys: card && typeof card === 'object' ? Object.keys(card).slice(0, 40) : [],
+		};
+		throw new Error(`小红书用户资料已获取，但没有可用于 RSS 的笔记条目；${JSON.stringify(detail)}`);
 	}
 
 	const descriptionParts = [
