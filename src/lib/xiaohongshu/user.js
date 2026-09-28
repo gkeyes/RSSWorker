@@ -211,11 +211,41 @@ const extractPage = async (html) => {
 		}
 	}
 
+	const rowLengths =
+		Array.isArray(rawNotes) && rawNotes.every((row) => Array.isArray(row))
+			? rawNotes.map((row) => row.length)
+			: [Array.isArray(rawNotes) ? rawNotes.length : -1];
+
+	const sampleItem = Array.isArray(selectedNotes) && selectedNotes.length ? selectedNotes[0] : null;
+	const sampleCard = sampleItem ? unwrap(sampleItem.noteCard ?? sampleItem.note_card ?? sampleItem) : null;
+	const debugSummary = {
+		activeTabKeys: Object.keys(activeTab || {}).slice(0, 20),
+		activeIndex,
+		activeQuery: activeTab?.query ?? '',
+		rawNotesType: Array.isArray(rawNotes) ? 'array' : typeof rawNotes,
+		rowLengths,
+		selectedLength: Array.isArray(selectedNotes) ? selectedNotes.length : -1,
+		normalizedLength: notes.length,
+		cardLinkCount: cardLinks.size,
+		sampleItemKeys: sampleItem && typeof sampleItem === 'object' ? Object.keys(sampleItem).slice(0, 30) : [],
+		sampleCardKeys: sampleCard && typeof sampleCard === 'object' ? Object.keys(sampleCard).slice(0, 30) : [],
+		sampleIndex: sampleItem?.index ?? null,
+		sampleHasId: Boolean(
+			sampleItem?.id ??
+				sampleItem?.noteId ??
+				sampleItem?.note_id ??
+				sampleCard?.noteId ??
+				sampleCard?.note_id ??
+				sampleCard?.id
+		),
+	};
+
 	return {
 		userPageData,
 		notes,
 		activeIndex,
 		cardLinkCount: cardLinks.size,
+		debugSummary,
 	};
 };
 
@@ -364,7 +394,8 @@ const getUser = async (ctx, url) => {
 	try {
 		const data = await getWithoutCookie(url);
 		if (data.notes.length) return { ...data, source: hasXsecToken ? 'token-fetch' : 'plain-fetch' };
-		diagnostics.push(hasProfile(data) ? 'fetch=profile-only' : 'fetch=empty');
+		const summary = data.debugSummary ? JSON.stringify(data.debugSummary) : '';
+		diagnostics.push(`${hasProfile(data) ? 'fetch=profile-only' : 'fetch=empty'}${summary ? ':' + summary : ''}`);
 	} catch (error) {
 		diagnostics.push(`fetch=${String(error?.message || error)}`);
 	}
@@ -380,7 +411,8 @@ const getUser = async (ctx, url) => {
 	try {
 		const data = await getWithBrowser(ctx, url);
 		if (data.notes.length) return { ...data, source: 'token-browser' };
-		diagnostics.push(hasProfile(data) ? 'browser=profile-only' : 'browser=empty');
+		const summary = data.debugSummary ? JSON.stringify(data.debugSummary) : '';
+		diagnostics.push(`${hasProfile(data) ? 'browser=profile-only' : 'browser=empty'}${summary ? ':' + summary : ''}`);
 	} catch (error) {
 		const message = String(error?.message || error);
 		if (message.includes('风控校验已触发')) throw error;
