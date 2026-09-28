@@ -111,10 +111,14 @@ const getHtmlAttr = (attrs, name) => {
 
 const extractHomeCardLinks = (html) => {
 	const links = new Map();
+	const samples = [];
+	let sectionCount = 0;
+	let anchorCount = 0;
 	const sectionPattern = /<section\b([^>]*)class=(["'])[^"']*\bnote-item\b[^"']*\2([^>]*)>([\s\S]*?)<\/section>/gi;
 	let sectionMatch;
 
 	while ((sectionMatch = sectionPattern.exec(html))) {
+		sectionCount++;
 		const attrs = String(sectionMatch[1] || '') + ' ' + String(sectionMatch[3] || '');
 		const indexMatch = attrs.match(/data-index=(["'])(\d+)\1/i);
 		if (!indexMatch) continue;
@@ -125,10 +129,20 @@ const extractHomeCardLinks = (html) => {
 		let anchorMatch;
 
 		while ((anchorMatch = anchorPattern.exec(body))) {
+			anchorCount++;
 			const anchorAttrs = anchorMatch[1];
 			const href = getHtmlAttr(anchorAttrs, 'href').replaceAll('&amp;', '&');
 			if (!href) continue;
 			const className = getHtmlAttr(anchorAttrs, 'class');
+			if (samples.length < 12) {
+				try {
+					const parsed = new URL(href, 'https://www.xiaohongshu.com');
+					samples.push({
+						path: parsed.pathname,
+						className: className.split(/\s+/).slice(0, 6).join('.'),
+					});
+				} catch {}
+			}
 			anchors.push({
 				href,
 				isCover: className.split(/\s+/).includes('cover'),
@@ -144,6 +158,11 @@ const extractHomeCardLinks = (html) => {
 		}
 	}
 
+	links.debug = {
+		sectionCount,
+		anchorCount,
+		samples,
+	};
 	return links;
 };
 
@@ -254,6 +273,9 @@ const extractPage = async (html) => {
 		selectedLength: Array.isArray(selectedNotes) ? selectedNotes.length : -1,
 		normalizedLength: notes.length,
 		cardLinkCount: cardLinks.size,
+		cardSectionCount: cardLinks.debug?.sectionCount ?? 0,
+		cardAnchorCount: cardLinks.debug?.anchorCount ?? 0,
+		cardHrefSamples: cardLinks.debug?.samples ?? [],
 		sampleItemKeys: sampleItem && typeof sampleItem === 'object' ? Object.keys(sampleItem).slice(0, 30) : [],
 		sampleCardKeys: sampleCard && typeof sampleCard === 'object' ? Object.keys(sampleCard).slice(0, 30) : [],
 		sampleIndex: sampleItem?.index ?? null,
