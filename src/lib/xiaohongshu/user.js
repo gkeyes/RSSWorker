@@ -97,24 +97,45 @@ const parseInitialStateText = (scriptText) => {
 	}
 };
 
+const getHtmlAttr = (attrs, name) => {
+	const pattern = new RegExp('\\\\b' + name + '=(["\\\'])(.*?)\\\\1', 'i');
+	const match = String(attrs || '').match(pattern);
+	return match ? match[2] : '';
+};
+
 const extractHomeCardLinks = (html) => {
 	const links = new Map();
-	const sectionPattern = /<section\b([^>]*)class=(["'])[^"']*\bnote-item\b[^"']*\2([^>]*)>([\s\S]*?)<\/section>/gi;
+	const sectionPattern = /<section\\b([^>]*)class=(["'])[^"']*\\bnote-item\\b[^"']*\\2([^>]*)>([\\s\\S]*?)<\\/section>/gi;
 	let sectionMatch;
 
 	while ((sectionMatch = sectionPattern.exec(html))) {
 		const attrs = `${sectionMatch[1]} ${sectionMatch[3]}`;
-		const indexMatch = attrs.match(/data-index=(["'])(\d+)\1/i);
+		const indexMatch = attrs.match(/data-index=(["'])(\\d+)\\1/i);
 		if (!indexMatch) continue;
 
 		const body = sectionMatch[4];
-		const hrefMatch =
-			body.match(/<a\b[^>]*class=(["'])[^"']*\bcover\b[^"']*\1[^>]*href=(["'])([^"']+)\2/i) ||
-			body.match(/<a\b[^>]*href=(["'])([^"']*(?:\/explore\/|\/discovery\/item\/|xsec_token=)[^"']*)\1/i);
+		const anchors = [];
+		const anchorPattern = /<a\\b([^>]*)>/gi;
+		let anchorMatch;
 
-		if (!hrefMatch) continue;
-		const href = hrefMatch.length >= 4 ? hrefMatch[3] : hrefMatch[2];
-		links.set(Number(indexMatch[2]), href);
+		while ((anchorMatch = anchorPattern.exec(body))) {
+			const anchorAttrs = anchorMatch[1];
+			const href = getHtmlAttr(anchorAttrs, 'href').replaceAll('&amp;', '&');
+			if (!href) continue;
+			const className = getHtmlAttr(anchorAttrs, 'class');
+			anchors.push({
+				href,
+				isCover: className.split(/\\s+/).includes('cover'),
+			});
+		}
+
+		const preferred =
+			anchors.find((anchor) => anchor.isCover && extractNoteIdFromUrl(anchor.href)) ||
+			anchors.find((anchor) => extractNoteIdFromUrl(anchor.href));
+
+		if (preferred) {
+			links.set(Number(indexMatch[2]), preferred.href);
+		}
 	}
 
 	return links;
