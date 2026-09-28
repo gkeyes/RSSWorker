@@ -391,6 +391,28 @@ const getWithBrowser = async (ctx, url) => {
 		const page = await browser.newPage();
 		await page.setUserAgent(USER_AGENT);
 
+		const networkDebug = {
+			apiResponses: [],
+			userPostedSeen: false,
+			userPostedStatus: null,
+			userPostedNotes: null,
+			userPostedFirstKeys: [],
+		};
+		page.on('response', (response) => {
+			try {
+				const parsed = new URL(response.url());
+				if (
+					(parsed.hostname.endsWith('xiaohongshu.com') || parsed.hostname.endsWith('xhscdn.com')) &&
+					parsed.pathname.includes('/api/')
+				) {
+					const key = `${parsed.hostname}${parsed.pathname}`;
+					if (!networkDebug.apiResponses.some((item) => item.path === key) && networkDebug.apiResponses.length < 40) {
+						networkDebug.apiResponses.push({ path: key, status: response.status() });
+					}
+				}
+			} catch {}
+		});
+
 		await page.setRequestInterception(true);
 		page.on('request', (request) => {
 			const type = request.resourceType();
@@ -438,14 +460,21 @@ const getWithBrowser = async (ctx, url) => {
 
 		const postedResponse = await postedResponsePromise;
 		if (postedResponse) {
+			networkDebug.userPostedSeen = true;
+			networkDebug.userPostedStatus = postedResponse.status();
 			try {
 				const payload = await postedResponse.json();
-				const apiNotes = normalizeNotes(payload?.data?.notes ?? []);
+				const rawApiNotes = payload?.data?.notes ?? [];
+				const apiNotes = normalizeNotes(rawApiNotes);
+				networkDebug.userPostedNotes = apiNotes.length;
+				const first = Array.isArray(rawApiNotes) ? rawApiNotes[0] : null;
+				if (first && typeof first === 'object') networkDebug.userPostedFirstKeys = Object.keys(first).slice(0, 30);
 				if (payload?.success !== false && payload?.code !== -1 && apiNotes.length) {
 					return {
 						...data,
 						notes: apiNotes,
 						source: 'browser-user-posted',
+						browserDebug: networkDebug,
 					};
 				}
 			} catch {
@@ -453,7 +482,7 @@ const getWithBrowser = async (ctx, url) => {
 			}
 		}
 
-		return data;
+		return { ...data, browserDebug: networkDebug };
 	} finally {
 		if (browser) {
 			try {
@@ -507,7 +536,8 @@ const getUser = async (ctx, url) => {
 		if (data.notes.length) {
 			if (hasRealNoteId(data.notes)) return { ...data, source: data.source || 'token-browser' };
 			diagnostics.push(`browser=redacted-notes(${data.notes.length})`);
-			if (!staticFallback) staticFallback = data;
+			if (staticFallback) staticFallback.browserDebug = data.browserDebug ?? null;
+			else staticFallback = data;
 		} else {
 			const summary = data.debugSummary ? JSON.stringify(data.debugSummary) : '';
 			diagnostics.push(`${hasProfile(data) ? 'browser=profile-only' : 'browser=empty'}${summary ? ':' + summary : ''}`);
@@ -649,7 +679,16 @@ const deal = async (ctx) => {
 	}
 
 	const userResult = await getUser(ctx, pageUrl.toString());
-	const { userPageData, notes, source, debugSummary } = userResult;
+	const { userPageData, notes, source, debugSummary, browserDebug } = userResult;
+	if (ctx.req.query('debug') === '1') {
+		return ctx.json({
+			source: source ?? 'unknown',
+			notesLength: notes.length,
+			hasRealNoteId: hasRealNoteId(notes),
+			debugSummary: debugSummary ?? null,
+			browserDebug: browserDebug ?? null,
+		});
+	}
 	const page = unwrap(userPageData) ?? {};
 	const basicInfo = getBasicInfo(userPageData);
 	const interactions = unwrap(page.interactions) ?? [];
