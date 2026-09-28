@@ -23,8 +23,8 @@ jobs:
         shell: bash
         run: |
           set -eu
-          RSS_URL='https://rss-worker.chinachanjan.workers.dev/rss/xiaohongshu/user/628dcef5000000001000de08?xsec_token=YBGHix4GAdOsgIfP9OHjvFqvgG26QX20A5N9qZjEbnQaA%3D&xsec_source=app_share&xhsshare=&shareRedId=ODlDRkY6ODo2NzUyOTgwNjg4OThJOkhP&apptime=1790565700&share_id=5f2f6a687fd74c03aa8007804a87e630&share_channel=wechat&refresh=1'
+          RSS_URL='https://rss-worker.chinachanjan.workers.dev/rss/xiaohongshu/user/628dcef5000000001000de08?xsec_token=YBGHix4GAdOsgIfP9OHjvFqvgG26QX20A5N9qZjEbnQaA%3D&xsec_source=app_share&xhsshare=&shareRedId=ODlDRkY6ODo2NzUyOTgwNjg4OThJOkhP&apptime=1790565700&share_id=5f2f6a687fd74c03aa8007804a87e630&share_channel=wechat&refresh=1&debug=1'
           META="$(curl -sS --max-time 90 -o /tmp/xhs.xml -w '%{http_code} %{time_total}' "$RSS_URL")"
           echo "META=$META"
-          python -c 'import re,xml.etree.ElementTree as ET; r=ET.parse("/tmp/xhs.xml").getroot(); items=r.find("channel").findall("item"); print("ITEM_COUNT="+str(len(items))); links=[(x.findtext("link") or "") for x in items]; guids=[(x.findtext("guid") or "") for x in items]; print("FIRST_LINK="+links[0]); print("FIRST_GUID="+guids[0]); print("XHS_LINKS="+str(sum(1 for x in links if re.search(r"xiao?hongshu\.com/(?:explore/|user/profile/)",x)))); print("HEX_GUIDS="+str(sum(1 for x in guids if re.fullmatch(r"[0-9a-fA-F]{24}",x))))'
+          cat /tmp/xhs.xml
 
