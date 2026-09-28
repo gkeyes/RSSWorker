@@ -19,20 +19,3 @@ jobs:
         with:
           apiToken: ${{ secrets.CF_API_TOKEN }}
           accountId: ${{ secrets.CF_ACCOUNT_ID }}
-      - name: Temporary Xiaohongshu anonymous probe
-        shell: bash
-        run: |
-          set -eu
-          UA='Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Version/17.0 Mobile/15E148 Safari/604.1'
-          SHORT_URL='https://xhslink.cn/o/6SIfJc8YqQe'
-          FINAL_URL="$(curl -LsS --max-time 30 -A "$UA" -o /dev/null -w '%{url_effective}' "$SHORT_URL")"
-          RSS_URL="$(python -c 'import sys,urllib.parse;u=urllib.parse.urlsplit(sys.argv[1]);parts=[p for p in u.path.split("/") if p];uid=parts[-1];q=[(k,v) for k,v in urllib.parse.parse_qsl(u.query,keep_blank_values=True) if k in {"xsec_token","xsec_source","xhsshare","shareRedId","apptime","share_id","share_channel"}];print("https://rss-worker.chinachanjan.workers.dev/rss/xiaohongshu/user/"+urllib.parse.quote(uid)+"?"+urllib.parse.urlencode(q))' "$FINAL_URL")"
-          REFRESH_URL="$RSS_URL&refresh=1"
-          REFRESH_META="$(curl -sS --max-time 90 -D /tmp/xhs-refresh-headers.txt -o /tmp/xhs-refresh.xml -w '%{http_code} %{time_total}' "$REFRESH_URL")"
-          echo "REFRESH_HTTP=$(echo "$REFRESH_META" | awk '{print $1}')"
-          echo "REFRESH_TIME=$(echo "$REFRESH_META" | awk '{print $2}')"
-          python -c 'import xml.etree.ElementTree as ET; r=ET.parse("/tmp/xhs-refresh.xml").getroot(); c=r.find("channel"); items=c.findall("item"); f=items[0]; link=f.findtext("link") or ""; guid=f.findtext("guid") or ""; print("REFRESH_ITEMS="+str(len(items))); print("CHANNEL_TITLE="+(c.findtext("title") or "")); print("FIRST_TITLE="+(f.findtext("title") or "")); print("FIRST_LINK="+link); print("FIRST_GUID="+guid); assert len(items)>0 and link.startswith("https://") and guid.startswith("xhs-cover:")'
-          CACHE_META="$(curl -sS --max-time 30 -D /tmp/xhs-cache-headers.txt -o /tmp/xhs-cache.xml -w '%{http_code} %{time_total}' "$RSS_URL")"
-          echo "CACHE_HTTP=$(echo "$CACHE_META" | awk '{print $1}')"
-          echo "CACHE_TIME=$(echo "$CACHE_META" | awk '{print $2}')"
-          python -c 'import xml.etree.ElementTree as ET; r=ET.parse("/tmp/xhs-cache.xml").getroot(); c=r.find("channel"); items=c.findall("item"); f=items[0]; print("CACHE_ITEMS="+str(len(items))); print("CACHE_GUID="+(f.findtext("guid") or "")); assert len(items)>0 and (f.findtext("guid") or "").startswith("xhs-cover:")'
