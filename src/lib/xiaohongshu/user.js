@@ -98,24 +98,24 @@ const parseInitialStateText = (scriptText) => {
 };
 
 const getHtmlAttr = (attrs, name) => {
-	const pattern = new RegExp('\\\\b' + name + '=(["\\\'])(.*?)\\\\1', 'i');
+	const pattern = new RegExp(\`\\b\${name}=(["'])(.*?)\\1\`, 'i');
 	const match = String(attrs || '').match(pattern);
 	return match ? match[2] : '';
 };
 
 const extractHomeCardLinks = (html) => {
 	const links = new Map();
-	const sectionPattern = /<section\\b([^>]*)class=(["'])[^"']*\\bnote-item\\b[^"']*\\2([^>]*)>([\\s\\S]*?)<\\/section>/gi;
+	const sectionPattern = /<section\b([^>]*)class=(["'])[^"']*\bnote-item\b[^"']*\2([^>]*)>([\s\S]*?)<\/section>/gi;
 	let sectionMatch;
 
 	while ((sectionMatch = sectionPattern.exec(html))) {
-		const attrs = `${sectionMatch[1]} ${sectionMatch[3]}`;
-		const indexMatch = attrs.match(/data-index=(["'])(\\d+)\\1/i);
+		const attrs = \`\${sectionMatch[1]} \${sectionMatch[3]}\`;
+		const indexMatch = attrs.match(/data-index=(["'])(\d+)\1/i);
 		if (!indexMatch) continue;
 
 		const body = sectionMatch[4];
 		const anchors = [];
-		const anchorPattern = /<a\\b([^>]*)>/gi;
+		const anchorPattern = /<a\b([^>]*)>/gi;
 		let anchorMatch;
 
 		while ((anchorMatch = anchorPattern.exec(body))) {
@@ -125,7 +125,7 @@ const extractHomeCardLinks = (html) => {
 			const className = getHtmlAttr(anchorAttrs, 'class');
 			anchors.push({
 				href,
-				isCover: className.split(/\\s+/).includes('cover'),
+				isCover: className.split(/\s+/).includes('cover'),
 			});
 		}
 
