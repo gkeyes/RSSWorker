@@ -480,14 +480,40 @@ const getUser = async (ctx, url) => {
 	throw new Error(`匿名 xsec_token 模式仍未抓到发布笔记；${diagnostics.join(' | ')}`);
 };
 
+const normalizeMediaUrl = (value) => {
+	if (!value) return '';
+	try {
+		const url = new URL(value);
+		if (url.protocol === 'http:' && (url.hostname === 'xhscdn.com' || url.hostname.endsWith('.xhscdn.com'))) {
+			url.protocol = 'https:';
+		}
+		return url.toString();
+	} catch {
+		return String(value);
+	}
+};
+
 const getCoverUrl = (cover) => {
 	cover = unwrap(cover) ?? {};
 	const infoList = unwrap(cover.infoList ?? cover.info_list);
+	let value = '';
 	if (Array.isArray(infoList) && infoList.length) {
 		const item = infoList[infoList.length - 1] ?? infoList[0];
-		return item?.url ?? item?.urlDefault ?? item?.url_default ?? item?.urlPre ?? item?.url_pre ?? '';
+		value = item?.url ?? item?.urlDefault ?? item?.url_default ?? item?.urlPre ?? item?.url_pre ?? '';
+	} else {
+		value = cover.urlDefault ?? cover.url_default ?? cover.urlPre ?? cover.url_pre ?? cover.url ?? '';
 	}
-	return cover.urlDefault ?? cover.url_default ?? cover.urlPre ?? cover.url_pre ?? cover.url ?? '';
+	return normalizeMediaUrl(value);
+};
+
+const getAnonymousGuid = (coverUrl, author, displayTitle, noteTime) => {
+	try {
+		const url = new URL(coverUrl);
+		const last = url.pathname.split('/').filter(Boolean).pop() || '';
+		const mediaId = last.split('!')[0];
+		if (mediaId) return `xhs-cover:${mediaId}`;
+	} catch {}
+	return `xhs-anon:${author || ''}:${noteTime || ''}:${displayTitle || ''}`;
 };
 
 const toRssItem = (item, fallbackAuthor) => {
@@ -527,7 +553,7 @@ const toRssItem = (item, fallbackAuthor) => {
 	// URL as the stable item link, matching RSSHub's list-feed fallback strategy.
 	if (!link) return null;
 
-	const guid = noteId || coverUrl || `${author || ''}:${displayTitle}`;
+	const guid = noteId || getAnonymousGuid(coverUrl, author, displayTitle, noteCard.time ?? item.time);
 
 	return {
 		title: String(displayTitle).trim() || (noteId ? `小红书笔记 ${noteId}` : '小红书笔记'),
