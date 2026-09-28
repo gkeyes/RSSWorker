@@ -19,24 +19,3 @@ jobs:
         with:
           apiToken: ${{ secrets.CF_API_TOKEN }}
           accountId: ${{ secrets.CF_ACCOUNT_ID }}
-      - name: Temporary Xiaohongshu end-to-end probe
-        shell: bash
-        run: |
-          set -u
-          RSS_URL='https://rss-worker.chinachanjan.workers.dev/rss/xiaohongshu/user/654cf9f4000000000202b698?xsec_token=YBLFCxbQ-FhvW3KyIF1Fdcf8T3fNIg9IXyoqycDRu71xI%3D&xsec_source=app_share&xhsshare=&shareRedId=ODlDRkY6ODo2NzUyOTgwNjg4OThJOkhP&apptime=1790525803&share_id=67a8531b7b5f4801b84101dbf9590423&share_channel=copy_link&refresh=1'
-          HTTP_CODE="$(curl -sS --max-time 90 -D /tmp/xhs-headers.txt -o /tmp/xhs-body.txt -w '%{http_code}' "$RSS_URL" || true)"
-          echo "HTTP=$HTTP_CODE"
-          echo "Content-Type=$(awk 'BEGIN{IGNORECASE=1} /^content-type:/{gsub(/\\r/,""); print substr($0,index($0,":")+2); exit}' /tmp/xhs-headers.txt)"
-          ITEM_COUNT="$( (grep -oi '<item\\b' /tmp/xhs-body.txt || true) | wc -l | tr -d ' ')"
-          echo "ITEM_COUNT=$ITEM_COUNT"
-          FIRST_TITLE="$(tr '\n' ' ' < /tmp/xhs-body.txt | sed -n 's/.*<item[^>]*>.*<title><!\[CDATA\[\([^]]*\)\]\]><\/title>.*/\1/p' | head -c 160 || true)"
-          echo "FIRST_TITLE=$FIRST_TITLE"
-          if [ "$ITEM_COUNT" = "0" ]; then
-            DEBUG_LINE="$(grep -i 'debug message:' /tmp/xhs-body.txt | head -1 | sed 's/<[^>]*>/ /g' | tr -s ' ' | cut -c1-1200 || true)"
-            if [ -n "$DEBUG_LINE" ]; then
-              echo "DEBUG=$DEBUG_LINE"
-            else
-              echo "BODY_HEAD=$(head -c 1200 /tmp/xhs-body.txt | tr '\n' ' ' | tr -s ' ')"
-            fi
-          fi
-          test "$HTTP_CODE" = "200" && test "$ITEM_COUNT" -gt 0
