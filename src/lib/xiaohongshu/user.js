@@ -184,7 +184,8 @@ const extractPage = async (html) => {
 		const item = notes[index];
 		const noteCard = unwrap(item.noteCard ?? item.note_card ?? item) ?? {};
 		let noteId = item.id ?? item.noteId ?? item.note_id ?? noteCard.noteId ?? noteCard.note_id ?? noteCard.id;
-		const href = cardLinks.get(index) || '';
+		const cardIndex = Number.isInteger(item.index) ? item.index : index;
+		const href = cardLinks.get(cardIndex) || '';
 		const hrefNoteId = extractNoteIdFromUrl(href);
 
 		if (!noteId && hrefNoteId) {
