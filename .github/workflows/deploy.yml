@@ -25,41 +25,20 @@ jobs:
           set -euo pipefail
           SHORT_URL='https://xhslink.cn/o/6SIfJc8YqQe'
           FINAL_URL="$(curl -LsS --max-time 30 -o /dev/null -w '%{url_effective}' "$SHORT_URL")"
-          echo "Resolved host/path: $(python - "$FINAL_URL" <<'PY'
-import sys, urllib.parse
-u=urllib.parse.urlsplit(sys.argv[1])
-print(u.netloc + u.path)
-PY
-)"
-          RSS_URL="$(python - "$FINAL_URL" <<'PY'
-import sys, urllib.parse
-u=urllib.parse.urlsplit(sys.argv[1])
-parts=[p for p in u.path.split('/') if p]
-uid=parts[-1]
-q=urllib.parse.parse_qsl(u.query, keep_blank_values=True)
-q=[(k,v) for k,v in q if k in {'xsec_token','xsec_source','xhsshare','shareRedId','apptime','share_id','share_channel'}]
-q.append(('refresh','1'))
-print('https://rss-worker.chinachanjan.workers.dev/rss/xiaohongshu/user/' + urllib.parse.quote(uid) + '?' + urllib.parse.urlencode(q))
-PY
-)"
+          echo "Resolved host/path: $(python -c 'import sys,urllib.parse; u=urllib.parse.urlsplit(sys.argv[1]); print(u.netloc+u.path)' "$FINAL_URL")"
+          RSS_URL="$(python -c 'import sys,urllib.parse; u=urllib.parse.urlsplit(sys.argv[1]); parts=[p for p in u.path.split("/") if p]; uid=parts[-1]; q=[(k,v) for k,v in urllib.parse.parse_qsl(u.query,keep_blank_values=True) if k in {"xsec_token","xsec_source","xhsshare","shareRedId","apptime","share_id","share_channel"}]; q.append(("refresh","1")); print("https://rss-worker.chinachanjan.workers.dev/rss/xiaohongshu/user/"+urllib.parse.quote(uid)+"?"+urllib.parse.urlencode(q))' "$FINAL_URL")"
           HTTP_CODE="$(curl -sS --max-time 90 -D /tmp/xhs-headers.txt -o /tmp/xhs-body.txt -w '%{http_code}' "$RSS_URL" || true)"
           echo "HTTP=$HTTP_CODE"
-          echo "Content-Type=$(awk 'BEGIN{IGNORECASE=1} /^content-type:/{gsub(/\r/,""); print substr($0,index($0,":")+2); exit}' /tmp/xhs-headers.txt)"
-          python - <<'PY'
-from pathlib import Path
-import re
-body=Path('/tmp/xhs-body.txt').read_text(errors='replace')
-items=len(re.findall(r'<item(?:\s|>)', body, re.I))
-print(f'ITEM_COUNT={items}')
-m=re.search(r'<item[\s\S]*?<title><!\[CDATA\[(.*?)\]\]></title>', body, re.I)
-if not m:
-    m=re.search(r'<item[\s\S]*?<title>(.*?)</title>', body, re.I)
-print('FIRST_TITLE=' + ((m.group(1).strip()[:160]) if m else ''))
-if items == 0:
-    dbg=re.search(r'debug message:\s*(.*)', body, re.I)
-    if dbg:
-        print('DEBUG=' + dbg.group(1)[:1000])
-    else:
-        print('BODY_HEAD=' + re.sub(r'\s+',' ',body[:1000]))
-PY
-
+          echo "Content-Type=$(awk 'BEGIN{IGNORECASE=1} /^content-type:/{gsub(/\\r/,""); print substr($0,index($0,":")+2); exit}' /tmp/xhs-headers.txt)"
+          ITEM_COUNT="$(grep -oi '<item\b' /tmp/xhs-body.txt | wc -l | tr -d ' ')"
+          echo "ITEM_COUNT=$ITEM_COUNT"
+          FIRST_TITLE="$(tr '\n' ' ' < /tmp/xhs-body.txt | sed -n 's/.*<item[^>]*>.*<title><!\[CDATA\[\([^]]*\)\]\]><\/title>.*/\1/p' | head -c 160 || true)"
+          echo "FIRST_TITLE=$FIRST_TITLE"
+          if [ "$ITEM_COUNT" = "0" ]; then
+            DEBUG_LINE="$(grep -i 'debug message:' /tmp/xhs-body.txt | head -1 | sed 's/<[^>]*>/ /g' | tr -s ' ' | cut -c1-1000 || true)"
+            if [ -n "$DEBUG_LINE" ]; then
+              echo "DEBUG=$DEBUG_LINE"
+            else
+              echo "BODY_HEAD=$(head -c 1000 /tmp/xhs-body.txt | tr '\n' ' ' | tr -s ' ')"
+            fi
+          fi
