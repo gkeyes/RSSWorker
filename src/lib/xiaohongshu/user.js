@@ -465,23 +465,38 @@ const getWithBrowser = async (ctx, url) => {
 	}
 };
 
+const getNoteId = (item) => {
+	item = unwrap(item) ?? {};
+	const noteCard = unwrap(item.noteCard ?? item.note_card ?? item) ?? {};
+	return noteCard.noteId ?? noteCard.note_id ?? noteCard.id ?? item.id ?? item.noteId ?? item.note_id ?? '';
+};
+
+const hasRealNoteId = (notes) => Array.isArray(notes) && notes.some((item) => /^[0-9a-f]{24}$/i.test(String(getNoteId(item))));
+
 const getUser = async (ctx, url) => {
 	const diagnostics = [];
 	const parsedUrl = new URL(url);
 	const hasXsecToken = Boolean(parsedUrl.searchParams.get('xsec_token'));
+	let staticFallback = null;
 
 	try {
 		const data = await getWithoutCookie(url);
-		if (data.notes.length) return { ...data, source: hasXsecToken ? 'token-fetch' : 'plain-fetch' };
-		const summary = data.debugSummary ? JSON.stringify(data.debugSummary) : '';
-		diagnostics.push(`${hasProfile(data) ? 'fetch=profile-only' : 'fetch=empty'}${summary ? ':' + summary : ''}`);
+		if (data.notes.length) {
+			if (hasRealNoteId(data.notes)) {
+				return { ...data, source: hasXsecToken ? 'token-fetch' : 'plain-fetch' };
+			}
+			staticFallback = data;
+			diagnostics.push(`fetch=redacted-notes(${data.notes.length})`);
+		} else {
+			const summary = data.debugSummary ? JSON.stringify(data.debugSummary) : '';
+			diagnostics.push(`${hasProfile(data) ? 'fetch=profile-only' : 'fetch=empty'}${summary ? ':' + summary : ''}`);
+		}
 	} catch (error) {
 		diagnostics.push(`fetch=${String(error?.message || error)}`);
 	}
 
-	// Anonymous bare-UID profile crawling is heavily rate-limited by Xiaohongshu.
-	// Do not burn Browser Run time when the request has no public xsec_token context.
 	if (!hasXsecToken) {
+		if (staticFallback) return { ...staticFallback, source: 'plain-fetch-redacted' };
 		throw new Error(
 			`匿名模式下裸 UID 未返回发布笔记；请使用带 xsec_token 的公开小红书用户主页/分享链接。诊断：${diagnostics.join(' | ')}`
 		);
@@ -489,15 +504,21 @@ const getUser = async (ctx, url) => {
 
 	try {
 		const data = await getWithBrowser(ctx, url);
-		if (data.notes.length) return { ...data, source: 'token-browser' };
-		const summary = data.debugSummary ? JSON.stringify(data.debugSummary) : '';
-		diagnostics.push(`${hasProfile(data) ? 'browser=profile-only' : 'browser=empty'}${summary ? ':' + summary : ''}`);
+		if (data.notes.length) {
+			if (hasRealNoteId(data.notes)) return { ...data, source: data.source || 'token-browser' };
+			diagnostics.push(`browser=redacted-notes(${data.notes.length})`);
+			if (!staticFallback) staticFallback = data;
+		} else {
+			const summary = data.debugSummary ? JSON.stringify(data.debugSummary) : '';
+			diagnostics.push(`${hasProfile(data) ? 'browser=profile-only' : 'browser=empty'}${summary ? ':' + summary : ''}`);
+		}
 	} catch (error) {
 		const message = String(error?.message || error);
 		if (message.includes('风控校验已触发')) throw error;
 		diagnostics.push(`browser=${message}`);
 	}
 
+	if (staticFallback) return { ...staticFallback, source: 'token-redacted-fallback' };
 	throw new Error(`匿名 xsec_token 模式仍未抓到发布笔记；${diagnostics.join(' | ')}`);
 };
 
