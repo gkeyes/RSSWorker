@@ -19,3 +19,18 @@ jobs:
         with:
           apiToken: ${{ secrets.CF_API_TOKEN }}
           accountId: ${{ secrets.CF_ACCOUNT_ID }}
+      - name: Temporary Xiaohongshu anonymous probe
+        shell: bash
+        run: |
+          set -u
+          UA='Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Version/17.0 Mobile/15E148 Safari/604.1'
+          SHORT_URL='https://xhslink.cn/o/6SIfJc8YqQe'
+          FINAL_URL="$(curl -LsS --max-time 30 -A "$UA" -o /dev/null -w '%{url_effective}' "$SHORT_URL" || true)"
+          echo "FINAL_PATH=$(python -c 'import sys,urllib.parse;u=urllib.parse.urlsplit(sys.argv[1]);print(u.netloc+u.path)' "$FINAL_URL")"
+          RSS_URL="$(python -c 'import sys,urllib.parse;u=urllib.parse.urlsplit(sys.argv[1]);parts=[p for p in u.path.split("/") if p];uid=parts[-1] if parts else "";q=[(k,v) for k,v in urllib.parse.parse_qsl(u.query,keep_blank_values=True) if k in {"xsec_token","xsec_source","xhsshare","shareRedId","apptime","share_id","share_channel"}];q.append(("refresh","1"));print("https://rss-worker.chinachanjan.workers.dev/rss/xiaohongshu/user/"+urllib.parse.quote(uid)+"?"+urllib.parse.urlencode(q))' "$FINAL_URL")"
+          HTTP_CODE="$(curl -sS --max-time 90 -D /tmp/xhs-headers.txt -o /tmp/xhs-body.txt -w '%{http_code}' "$RSS_URL" || true)"
+          echo "HTTP=$HTTP_CODE"
+          ITEM_COUNT="$( (grep -oi '<item\\b' /tmp/xhs-body.txt || true) | wc -l | tr -d ' ')"
+          echo "ITEM_COUNT=$ITEM_COUNT"
+          DEBUG_LINE="$(grep -i 'debug message:' /tmp/xhs-body.txt | head -1 | sed 's/<[^>]*>/ /g' | tr -s ' ' | cut -c1-5000 || true)"
+          echo "DEBUG=$DEBUG_LINE"
