@@ -401,6 +401,10 @@ const getWithBrowser = async (ctx, url) => {
 			}
 		});
 
+		const postedResponsePromise = page
+			.waitForResponse((response) => response.url().includes('/api/sns/web/v1/user_posted'), { timeout: 8000 })
+			.catch(() => null);
+
 		try {
 			await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 });
 		} catch (error) {
@@ -430,6 +434,23 @@ const getWithBrowser = async (ctx, url) => {
 
 		if (!hasProfile(data)) {
 			throw new Error('匿名 Browser Run 已打开主页，但没有用户资料');
+		}
+
+		const postedResponse = await postedResponsePromise;
+		if (postedResponse) {
+			try {
+				const payload = await postedResponse.json();
+				const apiNotes = normalizeNotes(payload?.data?.notes ?? []);
+				if (payload?.success !== false && payload?.code !== -1 && apiNotes.length) {
+					return {
+						...data,
+						notes: apiNotes,
+						source: 'browser-user-posted',
+					};
+				}
+			} catch {
+				// Fall back to rendered SSR state when the response body is unavailable.
+			}
 		}
 
 		return data;
