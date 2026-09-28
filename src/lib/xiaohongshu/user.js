@@ -494,7 +494,6 @@ const toRssItem = (item, fallbackAuthor) => {
 	item = unwrap(item) ?? {};
 	const noteCard = unwrap(item.noteCard ?? item.note_card ?? item) ?? {};
 	const noteId = noteCard.noteId ?? noteCard.note_id ?? noteCard.id ?? item.id ?? item.noteId ?? item.note_id;
-	if (!noteId) return null;
 
 	const noteUser = unwrap(noteCard.user ?? item.user) ?? {};
 	const interactInfo = unwrap(noteCard.interactInfo ?? noteCard.interact_info ?? item.interactInfo ?? item.interact_info) ?? {};
@@ -507,22 +506,33 @@ const toRssItem = (item, fallbackAuthor) => {
 		item.display_title ??
 		item.title ??
 		item.desc ??
-		`小红书笔记 ${noteId}`;
+		(noteId ? `小红书笔记 ${noteId}` : '小红书笔记');
 
 	const author = noteUser.nickname ?? noteUser.nickName ?? noteUser.nick_name ?? noteUser.name ?? fallbackAuthor;
 	const coverUrl = getCoverUrl(noteCard.cover ?? item.cover);
 	const xsecToken = item.xsecToken ?? item.xsec_token ?? noteCard.xsecToken ?? noteCard.xsec_token;
-	const noteUrl = new URL(`https://www.xiaohongshu.com/explore/${noteId}`);
 
-	if (xsecToken) {
-		noteUrl.searchParams.set('xsec_token', xsecToken);
-		noteUrl.searchParams.set('xsec_source', 'pc_user');
+	let link = coverUrl || '';
+	if (noteId) {
+		const noteUrl = new URL(`https://www.xiaohongshu.com/explore/${noteId}`);
+		if (xsecToken) {
+			noteUrl.searchParams.set('xsec_token', xsecToken);
+			noteUrl.searchParams.set('xsec_source', 'pc_user');
+		}
+		link = noteUrl.toString();
 	}
 
+	// Anonymous profile SSR currently redacts noteId for some users while still
+	// exposing the full note card. Keep those cards in the feed using the cover
+	// URL as the stable item link, matching RSSHub's list-feed fallback strategy.
+	if (!link) return null;
+
+	const guid = noteId || coverUrl || `${author || ''}:${displayTitle}`;
+
 	return {
-		title: String(displayTitle).trim() || `小红书笔记 ${noteId}`,
-		link: noteUrl.toString(),
-		guid: noteId,
+		title: String(displayTitle).trim() || (noteId ? `小红书笔记 ${noteId}` : '小红书笔记'),
+		link,
+		guid,
 		description: `${coverUrl ? `<img src="${coverUrl}"><br>` : ''}${displayTitle}`,
 		author,
 		upvotes: interactInfo.likedCount ?? interactInfo.liked_count,
