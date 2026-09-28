@@ -19,13 +19,3 @@ jobs:
         with:
           apiToken: ${{ secrets.CF_API_TOKEN }}
           accountId: ${{ secrets.CF_ACCOUNT_ID }}
-      - name: Temporary verify Xiaohongshu subscription
-        shell: bash
-        run: |
-          set -u
-          RSS_URL='https://rss-worker.chinachanjan.workers.dev/rss/xiaohongshu/user/628dcef5000000001000de08?xsec_token=YBGHix4GAdOsgIfP9OHjvFqvgG26QX20A5N9qZjEbnQaA%3D&xsec_source=app_share&xhsshare=&shareRedId=ODlDRkY6ODo2NzUyOTgwNjg4OThJOkhP&apptime=1790565700&share_id=5f2f6a687fd74c03aa8007804a87e630&share_channel=wechat'
-          META="$(curl -sS --max-time 90 -D /tmp/headers.txt -o /tmp/body.txt -w '%{http_code} %{time_total}' "$RSS_URL" || true)"
-          echo "META=$META"
-          echo "CONTENT_TYPE=$(awk 'BEGIN{IGNORECASE=1} /^content-type:/{gsub(/\\r/,""); print substr($0,index($0,":")+2); exit}' /tmp/headers.txt)"
-          echo "ITEM_COUNT=$(( $(grep -o '<item>' /tmp/body.txt | wc -l) ))"
-          grep -i 'debug message:' /tmp/body.txt | head -1 | sed 's/<[^>]*>/ /g' | tr -s ' ' | cut -c1-3000 || true
