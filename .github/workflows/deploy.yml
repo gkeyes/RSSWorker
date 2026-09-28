@@ -25,31 +25,7 @@ jobs:
           set -u
           RSS_URL='https://rss-worker.chinachanjan.workers.dev/rss/xiaohongshu/user/628dcef5000000001000de08?xsec_token=YBGHix4GAdOsgIfP9OHjvFqvgG26QX20A5N9qZjEbnQaA%3D&xsec_source=app_share&xhsshare=&shareRedId=ODlDRkY6ODo2NzUyOTgwNjg4OThJOkhP&apptime=1790565700&share_id=5f2f6a687fd74c03aa8007804a87e630&share_channel=wechat&refresh=1'
           META="$(curl -sS --max-time 90 -D /tmp/headers.txt -o /tmp/body.txt -w '%{http_code} %{time_total}' "$RSS_URL" || true)"
-          echo "HTTP=$(echo "$META" | awk '{print $1}')"
-          echo "TIME=$(echo "$META" | awk '{print $2}')"
-          echo "CONTENT_TYPE=$(awk 'BEGIN{IGNORECASE=1} /^content-type:/{gsub(/\r/,""); print substr($0,index($0,":")+2); exit}' /tmp/headers.txt)"
-          python - <<'PY'
-from pathlib import Path
-import re, xml.etree.ElementTree as ET
-p=Path('/tmp/body.txt')
-body=p.read_text(errors='replace')
-try:
-    root=ET.fromstring(body)
-    channel=root.find('channel')
-    items=[] if channel is None else channel.findall('item')
-    print('ITEM_COUNT='+str(len(items)))
-    if channel is not None:
-        print('CHANNEL_TITLE='+(channel.findtext('title') or '')[:200])
-    if items:
-        first=items[0]
-        print('FIRST_TITLE='+(first.findtext('title') or '')[:200])
-        print('FIRST_LINK='+(first.findtext('link') or '')[:240])
-except Exception as e:
-    print('XML_ERROR='+str(e))
-    m=re.search(r'debug message:\s*(.*)', body, re.I)
-    if m:
-        print('DEBUG='+m.group(1)[:3000])
-    else:
-        print('BODY_HEAD='+re.sub(r'\s+',' ',body[:1500]))
-PY
-
+          echo "META=$META"
+          echo "CONTENT_TYPE=$(awk 'BEGIN{IGNORECASE=1} /^content-type:/{gsub(/\\r/,""); print substr($0,index($0,":")+2); exit}' /tmp/headers.txt)"
+          echo "ITEM_COUNT=$(( $(grep -o '<item>' /tmp/body.txt | wc -l) ))"
+          grep -i 'debug message:' /tmp/body.txt | head -1 | sed 's/<[^>]*>/ /g' | tr -s ' ' | cut -c1-3000 || true
