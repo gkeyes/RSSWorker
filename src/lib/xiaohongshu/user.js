@@ -99,18 +99,18 @@ const parseInitialStateText = (scriptText) => {
 
 const extractHomeCardLinks = (html) => {
 	const links = new Map();
-	const sectionPattern = /<section\\b([^>]*)class=(["'])[^"']*\\bnote-item\\b[^"']*\\2([^>]*)>([\\s\\S]*?)<\\/section>/gi;
+	const sectionPattern = /<section\b([^>]*)class=(["'])[^"']*\bnote-item\b[^"']*\2([^>]*)>([\s\S]*?)<\/section>/gi;
 	let sectionMatch;
 
 	while ((sectionMatch = sectionPattern.exec(html))) {
 		const attrs = `${sectionMatch[1]} ${sectionMatch[3]}`;
-		const indexMatch = attrs.match(/data-index=(["'])(\\d+)\\1/i);
+		const indexMatch = attrs.match(/data-index=(["'])(\d+)\1/i);
 		if (!indexMatch) continue;
 
 		const body = sectionMatch[4];
-		const hrefMatch = body.match(
-			/<a\\b[^>]*class=(["'])[^"']*\\bcover\\b[^"']*\\1[^>]*href=(["'])([^"']+)\\2/i
-		) || body.match(/<a\\b[^>]*href=(["'])([^"']*(?:\\/explore\\/|\\/discovery\\/item\\/|xsec_token=)[^"']*)\\1/i);
+		const hrefMatch =
+			body.match(/<a\b[^>]*class=(["'])[^"']*\bcover\b[^"']*\1[^>]*href=(["'])([^"']+)\2/i) ||
+			body.match(/<a\b[^>]*href=(["'])([^"']*(?:\/explore\/|\/discovery\/item\/|xsec_token=)[^"']*)\1/i);
 
 		if (!hrefMatch) continue;
 		const href = hrefMatch.length >= 4 ? hrefMatch[3] : hrefMatch[2];
