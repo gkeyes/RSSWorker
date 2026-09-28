@@ -4,7 +4,7 @@ import { renderRss2 } from '../../utils/util';
 const USER_AGENT =
 	'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36';
 
-const unwrap = (value) => value?._rawValue ?? value?._value ?? value;
+const unwrap = (value) => value?._rawValue ?? value?._value ?? value?.value ?? value;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const getHeaders = (cookie = '') => ({
@@ -12,7 +12,6 @@ const getHeaders = (cookie = '') => ({
 	'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
 	'Cache-Control': 'no-cache',
 	Pragma: 'no-cache',
-	Referer: 'https://www.xiaohongshu.com/',
 	'User-Agent': USER_AGENT,
 	...(cookie ? { Cookie: cookie } : {}),
 });
@@ -88,7 +87,8 @@ const parseInitialStateText = (scriptText) => {
 		.replaceAll(/new Set\(\s*\[\s*\]\s*\)/g, '[]')
 		.replaceAll(/new Map\(\s*\)/g, '{}')
 		.replaceAll(/new Set\(\s*\)/g, '[]')
-		.replaceAll(/\bundefined\b/g, 'null');
+		.replaceAll(/\bundefined\b/g, 'null')
+		.replaceAll(/\bNaN\b/g, 'null');
 
 	try {
 		return JSON.parse(script);
@@ -294,6 +294,15 @@ const fetchProfileHtml = async (url, cookie = '') => {
 
 	if (!response.ok) {
 		throw new Error(`小红书主页请求失败: HTTP ${response.status}`);
+	}
+
+	try {
+		const finalUrl = new URL(response.url);
+		if (finalUrl.hostname === 'www.xiaohongshu.com' && finalUrl.pathname.startsWith('/login')) {
+			throw new Error('小红书匿名主页被重定向到 /login');
+		}
+	} catch (error) {
+		if (String(error?.message || error).includes('重定向到 /login')) throw error;
 	}
 
 	return response.text();
