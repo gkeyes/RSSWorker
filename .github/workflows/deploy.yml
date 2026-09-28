@@ -22,23 +22,21 @@ jobs:
       - name: Temporary Xiaohongshu end-to-end probe
         shell: bash
         run: |
-          set -euo pipefail
-          SHORT_URL='https://xhslink.cn/o/6SIfJc8YqQe'
-          FINAL_URL="$(curl -LsS --max-time 30 -o /dev/null -w '%{url_effective}' "$SHORT_URL")"
-          echo "Resolved host/path: $(python -c 'import sys,urllib.parse; u=urllib.parse.urlsplit(sys.argv[1]); print(u.netloc+u.path)' "$FINAL_URL")"
-          RSS_URL="$(python -c 'import sys,urllib.parse; u=urllib.parse.urlsplit(sys.argv[1]); parts=[p for p in u.path.split("/") if p]; uid=parts[-1]; q=[(k,v) for k,v in urllib.parse.parse_qsl(u.query,keep_blank_values=True) if k in {"xsec_token","xsec_source","xhsshare","shareRedId","apptime","share_id","share_channel"}]; q.append(("refresh","1")); print("https://rss-worker.chinachanjan.workers.dev/rss/xiaohongshu/user/"+urllib.parse.quote(uid)+"?"+urllib.parse.urlencode(q))' "$FINAL_URL")"
+          set -u
+          RSS_URL='https://rss-worker.chinachanjan.workers.dev/rss/xiaohongshu/user/654cf9f4000000000202b698?xsec_token=YBLFCxbQ-FhvW3KyIF1Fdcf8T3fNIg9IXyoqycDRu71xI%3D&xsec_source=app_share&xhsshare=&shareRedId=ODlDRkY6ODo2NzUyOTgwNjg4OThJOkhP&apptime=1790525803&share_id=67a8531b7b5f4801b84101dbf9590423&share_channel=copy_link&refresh=1'
           HTTP_CODE="$(curl -sS --max-time 90 -D /tmp/xhs-headers.txt -o /tmp/xhs-body.txt -w '%{http_code}' "$RSS_URL" || true)"
           echo "HTTP=$HTTP_CODE"
           echo "Content-Type=$(awk 'BEGIN{IGNORECASE=1} /^content-type:/{gsub(/\\r/,""); print substr($0,index($0,":")+2); exit}' /tmp/xhs-headers.txt)"
-          ITEM_COUNT="$(grep -oi '<item\b' /tmp/xhs-body.txt | wc -l | tr -d ' ')"
+          ITEM_COUNT="$( (grep -oi '<item\\b' /tmp/xhs-body.txt || true) | wc -l | tr -d ' ')"
           echo "ITEM_COUNT=$ITEM_COUNT"
           FIRST_TITLE="$(tr '\n' ' ' < /tmp/xhs-body.txt | sed -n 's/.*<item[^>]*>.*<title><!\[CDATA\[\([^]]*\)\]\]><\/title>.*/\1/p' | head -c 160 || true)"
           echo "FIRST_TITLE=$FIRST_TITLE"
           if [ "$ITEM_COUNT" = "0" ]; then
-            DEBUG_LINE="$(grep -i 'debug message:' /tmp/xhs-body.txt | head -1 | sed 's/<[^>]*>/ /g' | tr -s ' ' | cut -c1-1000 || true)"
+            DEBUG_LINE="$(grep -i 'debug message:' /tmp/xhs-body.txt | head -1 | sed 's/<[^>]*>/ /g' | tr -s ' ' | cut -c1-1200 || true)"
             if [ -n "$DEBUG_LINE" ]; then
               echo "DEBUG=$DEBUG_LINE"
             else
-              echo "BODY_HEAD=$(head -c 1000 /tmp/xhs-body.txt | tr '\n' ' ' | tr -s ' ')"
+              echo "BODY_HEAD=$(head -c 1200 /tmp/xhs-body.txt | tr '\n' ' ' | tr -s ' ')"
             fi
           fi
+          test "$HTTP_CODE" = "200" && test "$ITEM_COUNT" -gt 0
