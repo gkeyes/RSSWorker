@@ -98,9 +98,15 @@ const parseInitialStateText = (scriptText) => {
 };
 
 const getHtmlAttr = (attrs, name) => {
-	const pattern = new RegExp(\`\\b\${name}=(["'])(.*?)\\1\`, 'i');
-	const match = String(attrs || '').match(pattern);
-	return match ? match[2] : '';
+	const pattern = /([^\s=]+)\s*=\s*(["'])(.*?)\2/g;
+	let match;
+	const source = String(attrs || '');
+	while ((match = pattern.exec(source))) {
+		if (match[1].toLowerCase() === String(name).toLowerCase()) {
+			return match[3];
+		}
+	}
+	return '';
 };
 
 const extractHomeCardLinks = (html) => {
