@@ -719,8 +719,13 @@ const debugSearchNote = async (ctx, keyword) => {
 			}
 		});
 		await page.type('#search-input', keyword, { delay: 15 });
-		await page.keyboard.press('Enter');
-		await sleep(3500);
+		const searchButton = await page.$('#search-input + .input-button .search-icon');
+		if (searchButton) {
+			await searchButton.click();
+		} else {
+			await page.keyboard.press('Enter');
+		}
+		await sleep(4500);
 
 		const after = await page.evaluate((query) => {
 			const clean = (v) => String(v || '').replace(/\s+/g, ' ').trim();
