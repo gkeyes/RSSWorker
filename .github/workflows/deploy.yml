@@ -24,6 +24,7 @@ jobs:
         run: |
           set -eu
           URL='https://rss-worker.chinachanjan.workers.dev/rss/xiaohongshu/user/628dcef5000000001000de08?debug=search&keyword=%E5%B0%8F%E7%8C%AB%E5%92%AA%E4%BC%9A%E6%9C%89%E4%BB%80%E4%B9%88%E7%83%A6%E5%BF%83%E4%BA%8B%E5%91%A2~'
+          sleep 6
           curl -sS --max-time 90 "$URL" -o /tmp/search.json
           python -c 'import json; d=json.load(open("/tmp/search.json")); import pprint; pprint.pp(d, width=140)'
 
