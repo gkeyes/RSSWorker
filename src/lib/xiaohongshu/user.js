@@ -598,6 +598,27 @@ const debugBrowserNoteId = async (ctx, url, uid) => {
 				const noteStateText = (() => {
 					try { return JSON.stringify(noteState); } catch { return ''; }
 				})();
+				const htmlText = document.documentElement.outerHTML;
+				const userState = window.__INITIAL_STATE__?.user || {};
+				const unwrapRef = (value) => value?._rawValue ?? value?._value ?? value?.value ?? value;
+				const rawNotes = unwrapRef(userState.notes) || [];
+				const activeTab = unwrapRef(userState.activeTab) || {};
+				const row = Array.isArray(rawNotes) && Array.isArray(rawNotes[activeTab.index || 0]) ? rawNotes[activeTab.index || 0] : [];
+				const noteTimeMatches = row.slice(0, 12).map((entry, index) => {
+					const card = unwrapRef(entry?.noteCard ?? entry?.note_card ?? entry) || {};
+					const rawTime = Number(card.time ?? entry?.time ?? 0);
+					const seconds = rawTime > 1e12 ? Math.floor(rawTime / 1000) : Math.floor(rawTime);
+					const prefix = seconds > 0 ? seconds.toString(16).padStart(8, '0').slice(-8) : '';
+					const pattern = prefix ? new RegExp(prefix + '[0-9a-fA-F]{16}', 'gi') : null;
+					const matches = pattern ? [...new Set(htmlText.match(pattern) || [])].slice(0, 12) : [];
+					return {
+						index,
+						title: String(card.displayTitle ?? card.display_title ?? card.title ?? '').slice(0, 120),
+						time: rawTime,
+						prefix,
+						matches,
+					};
+				});
 				const sections = Array.from(document.querySelectorAll('section.note-item')).slice(0, 8).map((section) => {
 					const links = Array.from(section.querySelectorAll('a')).slice(0, 8).map((a) => ({
 						raw: a.getAttribute('href') || '',
@@ -633,6 +654,7 @@ const debugBrowserNoteId = async (ctx, url, uid) => {
 					htmlHex: uniqueHex(document.documentElement.outerHTML),
 					noteStateKeys: noteState && typeof noteState === 'object' ? Object.keys(noteState).slice(0, 30) : [],
 					noteStateHex: uniqueHex(noteStateText),
+					noteTimeMatches,
 					sections,
 				};
 			}, uid);
