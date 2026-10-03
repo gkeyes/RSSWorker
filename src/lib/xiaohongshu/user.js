@@ -565,6 +565,96 @@ const toRssItem = (item, fallbackAuthor) => {
 	};
 };
 
+
+const debugBrowserNoteId = async (ctx, url, uid) => {
+	if (!ctx.env?.BROWSER) throw new Error('Cloudflare Browser Run binding 不可用');
+	let browser;
+	try {
+		browser = await puppeteer.launch(ctx.env.BROWSER);
+		const page = await browser.newPage();
+		await page.setUserAgent(USER_AGENT);
+		await page.setRequestInterception(true);
+		page.on('request', (request) => {
+			const type = request.resourceType();
+			if (['document', 'script', 'xhr', 'fetch', 'other'].includes(type)) request.continue();
+			else request.abort();
+		});
+		await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {});
+		await sleep(1200);
+
+		const collect = async () =>
+			page.evaluate((targetUid) => {
+				const hex = /[0-9a-fA-F]{24}/g;
+				const uniqueHex = (value) => {
+					const out = [];
+					for (const match of String(value || '').matchAll(hex)) {
+						const id = match[0].toLowerCase();
+						if (id !== String(targetUid || '').toLowerCase() && !out.includes(id)) out.push(id);
+						if (out.length >= 40) break;
+					}
+					return out;
+				};
+				const noteState = window.__INITIAL_STATE__?.note || null;
+				const noteStateText = (() => {
+					try { return JSON.stringify(noteState); } catch { return ''; }
+				})();
+				const sections = Array.from(document.querySelectorAll('section.note-item')).slice(0, 8).map((section) => {
+					const links = Array.from(section.querySelectorAll('a')).slice(0, 8).map((a) => ({
+						raw: a.getAttribute('href') || '',
+						href: a.href || '',
+						className: typeof a.className === 'string' ? a.className : '',
+					}));
+					const vueKeys = Object.getOwnPropertyNames(section).filter((key) => key.startsWith('__vue') || key === '_vei');
+					let vueHex = [];
+					for (const key of vueKeys) {
+						try {
+							const seen = new WeakSet();
+							const text = JSON.stringify(section[key], (name, value) => {
+								if (typeof value === 'object' && value) {
+									if (seen.has(value)) return undefined;
+									seen.add(value);
+								}
+								if (name === 'parent' || name === 'appContext' || name === 'subTree' || name === 'vnode') return undefined;
+								return value;
+							});
+							vueHex = vueHex.concat(uniqueHex(text));
+						} catch {}
+					}
+					return {
+						index: section.getAttribute('data-index'),
+						attrs: Array.from(section.attributes).map((a) => [a.name, a.value]).slice(0, 12),
+						links,
+						vueKeys,
+						vueHex: [...new Set(vueHex)].slice(0, 10),
+					};
+				});
+				return {
+					url: location.href,
+					htmlHex: uniqueHex(document.documentElement.outerHTML),
+					noteStateKeys: noteState && typeof noteState === 'object' ? Object.keys(noteState).slice(0, 30) : [],
+					noteStateHex: uniqueHex(noteStateText),
+					sections,
+				};
+			}, uid);
+
+		const before = await collect();
+		const card = await page.$('section.note-item .cover, section.note-item a.cover, section.note-item');
+		let clickError = '';
+		if (card) {
+			try {
+				await card.click();
+				await sleep(1500);
+			} catch (error) {
+				clickError = String(error?.message || error);
+			}
+		}
+		const after = await collect();
+		return { before, after, clickError };
+	} finally {
+		if (browser) await browser.close().catch(() => {});
+	}
+};
+
 const getCache = () => {
 	try {
 		return caches.default;
@@ -578,7 +668,7 @@ const deal = async (ctx) => {
 	const cache = getCache();
 	const cacheKey = new Request(`https://rssworker-cache.invalid/xiaohongshu/user/${uid}`);
 
-	if (cache && ctx.req.query('refresh') !== '1') {
+	if (cache && ctx.req.query('refresh') !== '1' && ctx.req.query('debug') !== 'noteid') {
 		const cached = await cache.match(cacheKey);
 		if (cached) return cached;
 	}
@@ -604,6 +694,10 @@ const deal = async (ctx) => {
 	}
 	if (pageUrl.searchParams.has('xsec_token') && !pageUrl.searchParams.has('xsec_source')) {
 		pageUrl.searchParams.set('xsec_source', 'app_share');
+	}
+
+	if (ctx.req.query('debug') === 'noteid') {
+		return ctx.json(await debugBrowserNoteId(ctx, pageUrl.toString(), uid));
 	}
 
 	const userResult = await getUser(ctx, pageUrl.toString());
