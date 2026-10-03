@@ -677,6 +677,81 @@ const debugBrowserNoteId = async (ctx, url, uid) => {
 	}
 };
 
+
+const debugSearchNote = async (ctx, keyword) => {
+	if (!ctx.env?.BROWSER) throw new Error('Cloudflare Browser Run binding 不可用');
+	let browser;
+	try {
+		browser = await puppeteer.launch(ctx.env.BROWSER);
+		const page = await browser.newPage();
+		await page.setUserAgent(USER_AGENT);
+		await page.setRequestInterception(true);
+		page.on('request', (request) => {
+			const type = request.resourceType();
+			if (['document', 'script', 'xhr', 'fetch', 'other', 'stylesheet'].includes(type)) request.continue();
+			else request.abort();
+		});
+		await page.goto('https://www.xiaohongshu.com/explore', { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {});
+		await sleep(1200);
+
+		let inputFound = false;
+		try {
+			await page.waitForSelector('#search-input', { timeout: 5000 });
+			inputFound = true;
+		} catch {}
+
+		const before = await page.evaluate(() => ({
+			url: location.href,
+			title: document.title,
+			hasInput: Boolean(document.querySelector('#search-input')),
+			loginWall: /登录|扫码登录|登录后/.test(document.body?.innerText || ''),
+			securityWall: /安全限制|请求太频繁|访问频次异常|验证码/.test(document.body?.innerText || ''),
+		}));
+
+		if (!inputFound) return { before, submitted: false, results: [] };
+
+		await page.focus('#search-input');
+		await page.evaluate(() => {
+			const el = document.querySelector('#search-input');
+			if (el) {
+				el.value = '';
+				el.dispatchEvent(new Event('input', { bubbles: true }));
+			}
+		});
+		await page.type('#search-input', keyword, { delay: 15 });
+		await page.keyboard.press('Enter');
+		await sleep(3500);
+
+		const after = await page.evaluate((query) => {
+			const clean = (v) => String(v || '').replace(/\s+/g, ' ').trim();
+			const rows = [];
+			for (const section of document.querySelectorAll('section.note-item')) {
+				const link =
+					section.querySelector('a.cover.mask') ||
+					section.querySelector('a[href*="/search_result/"]') ||
+					section.querySelector('a[href*="/explore/"]');
+				const title =
+					clean(section.querySelector('.title, .note-title, a.title')?.textContent) ||
+					clean(link?.querySelector('span')?.textContent);
+				const href = link?.href || link?.getAttribute('href') || '';
+				if (title || href) rows.push({ title, href });
+				if (rows.length >= 20) break;
+			}
+			return {
+				url: location.href,
+				title: document.title,
+				loginWall: /登录后查看搜索结果|扫码登录/.test(document.body?.innerText || ''),
+				securityWall: /安全限制|请求太频繁|访问频次异常|验证码/.test(document.body?.innerText || ''),
+				query,
+				rows,
+			};
+		}, keyword);
+		return { before, submitted: true, after };
+	} finally {
+		if (browser) await browser.close().catch(() => {});
+	}
+};
+
 const getCache = () => {
 	try {
 		return caches.default;
@@ -720,6 +795,9 @@ const deal = async (ctx) => {
 
 	if (ctx.req.query('debug') === 'noteid') {
 		return ctx.json(await debugBrowserNoteId(ctx, pageUrl.toString(), uid));
+	}
+	if (ctx.req.query('debug') === 'search') {
+		return ctx.json(await debugSearchNote(ctx, ctx.req.query('keyword') || ''));
 	}
 
 	const userResult = await getUser(ctx, pageUrl.toString());
