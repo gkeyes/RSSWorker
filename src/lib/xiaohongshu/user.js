@@ -691,67 +691,14 @@ const debugSearchNote = async (ctx, keyword) => {
 			if (['document', 'script', 'xhr', 'fetch', 'other', 'stylesheet'].includes(type)) request.continue();
 			else request.abort();
 		});
-		await page.goto('https://www.xiaohongshu.com/explore', { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {});
-		await sleep(1200);
 
-		let inputFound = false;
-		try {
-			await page.waitForSelector('#search-input', { timeout: 5000 });
-			inputFound = true;
-		} catch {}
+		const target = new URL('https://www.xiaohongshu.com/search_result');
+		target.searchParams.set('keyword', keyword);
+		target.searchParams.set('source', 'web_search_result_notes');
+		await page.goto(target.toString(), { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {});
+		await sleep(5000);
 
-		const before = await page.evaluate(() => ({
-			url: location.href,
-			title: document.title,
-			hasInput: Boolean(document.querySelector('#search-input')),
-			loginWall: /登录|扫码登录|登录后/.test(document.body?.innerText || ''),
-			securityWall: /安全限制|请求太频繁|访问频次异常|验证码/.test(document.body?.innerText || ''),
-		}));
-
-		if (!inputFound) return { before, submitted: false, results: [] };
-
-		await page.focus('#search-input');
-		await page.evaluate(() => {
-			const el = document.querySelector('#search-input');
-			if (el) {
-				el.value = '';
-				el.dispatchEvent(new Event('input', { bubbles: true }));
-			}
-		});
-		await page.type('#search-input', keyword, { delay: 15 });
-		const typedValue = await page.$eval('#search-input', (el) => el.value);
-		const searchButton = await page.$('#search-input + .input-button .search-icon');
-		const searchButtonParent = await page.$('#search-input + .input-button');
-		let submitMode = '';
-		if (searchButton) {
-			await searchButton.click();
-			submitMode = 'icon';
-		} else if (searchButtonParent) {
-			await searchButtonParent.click();
-			submitMode = 'parent';
-		} else {
-			await page.keyboard.press('Enter');
-			submitMode = 'enter';
-		}
-		await sleep(1200);
-		let pages = await browser.pages();
-		if (pages.length === 1 && page.url().includes('/explore') && searchButtonParent && submitMode === 'icon') {
-			await searchButtonParent.click().catch(() => {});
-			submitMode += '+parent';
-			await sleep(1200);
-			pages = await browser.pages();
-		}
-		if (pages.length === 1 && page.url().includes('/explore')) {
-			await page.focus('#search-input').catch(() => {});
-			await page.keyboard.press('Enter').catch(() => {});
-			submitMode += '+enter';
-			await sleep(2200);
-			pages = await browser.pages();
-		}
-		const resultPage = pages.length > 1 ? pages[pages.length - 1] : page;
-		await sleep(1000);
-
-		const after = await resultPage.evaluate((query) => {
+		return page.evaluate((query) => {
 			const clean = (v) => String(v || '').replace(/\s+/g, ' ').trim();
 			const rows = [];
 			for (const section of document.querySelectorAll('section.note-item')) {
@@ -762,27 +709,26 @@ const debugSearchNote = async (ctx, keyword) => {
 				const title =
 					clean(section.querySelector('.title, .note-title, a.title')?.textContent) ||
 					clean(link?.querySelector('span')?.textContent);
+				const authorLink = section.querySelector('a.author, a[href*="/user/profile/"]');
+				const author = clean(
+					section.querySelector('a.author .name, .author-name, .nick-name, .name')?.textContent ||
+					authorLink?.textContent
+				);
 				const href = link?.href || link?.getAttribute('href') || '';
-				if (title || href) rows.push({ title, href });
-				if (rows.length >= 20) break;
+				const authorHref = authorLink?.href || authorLink?.getAttribute('href') || '';
+				if (title || href) rows.push({ title, author, href, authorHref });
+				if (rows.length >= 40) break;
 			}
 			return {
+				query,
 				url: location.href,
 				title: document.title,
-				loginWall: /登录后查看搜索结果|扫码登录/.test(document.body?.innerText || ''),
+				loginWall: /登录后查看搜索结果|扫码登录|登录后/.test(document.body?.innerText || ''),
 				securityWall: /安全限制|请求太频繁|访问频次异常|验证码/.test(document.body?.innerText || ''),
-				query,
+				bodyHead: clean(document.body?.innerText || '').slice(0, 600),
 				rows,
 			};
 		}, keyword);
-		return {
-			before,
-			submitted: true,
-			typedValue,
-			submitMode,
-			pageUrls: (await browser.pages()).map((p) => p.url()),
-			after,
-		};
 	} finally {
 		if (browser) await browser.close().catch(() => {});
 	}
