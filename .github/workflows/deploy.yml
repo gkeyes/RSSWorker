@@ -19,3 +19,11 @@ jobs:
         with:
           apiToken: ${{ secrets.CF_API_TOKEN }}
           accountId: ${{ secrets.CF_ACCOUNT_ID }}
+      - name: Temporary probe hidden Xiaohongshu note ids
+        shell: bash
+        run: |
+          set -eu
+          URL='https://rss-worker.chinachanjan.workers.dev/rss/xiaohongshu/user/628dcef5000000001000de08?xsec_token=YBGHix4GAdOsgIfP9OHjvFqvgG26QX20A5N9qZjEbnQaA%3D&xsec_source=app_share&xhsshare=&shareRedId=ODlDRkY6ODo2NzUyOTgwNjg4OThJOkhP&apptime=1790565700&share_id=5f2f6a687fd74c03aa8007804a87e630&share_channel=wechat&debug=noteid'
+          curl -sS --max-time 90 "$URL" -o /tmp/noteid.json
+          python -c 'import json; d=json.load(open("/tmp/noteid.json")); import pprint; pprint.pp(d, width=140)'
+
