@@ -801,7 +801,7 @@ const deal = async (ctx) => {
 	const cache = getCache();
 	const cacheKey = new Request(`https://rssworker-cache.invalid/xiaohongshu/user/${uid}`);
 
-	if (cache && ctx.req.query('refresh') !== '1' && ctx.req.query('debug') !== 'noteid') {
+	if (cache && ctx.req.query('refresh') !== '1' && !ctx.req.query('debug')) {
 		const cached = await cache.match(cacheKey);
 		if (cached) return cached;
 	}
