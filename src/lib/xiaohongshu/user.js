@@ -719,15 +719,39 @@ const debugSearchNote = async (ctx, keyword) => {
 			}
 		});
 		await page.type('#search-input', keyword, { delay: 15 });
+		const typedValue = await page.$eval('#search-input', (el) => el.value);
 		const searchButton = await page.$('#search-input + .input-button .search-icon');
+		const searchButtonParent = await page.$('#search-input + .input-button');
+		let submitMode = '';
 		if (searchButton) {
 			await searchButton.click();
+			submitMode = 'icon';
+		} else if (searchButtonParent) {
+			await searchButtonParent.click();
+			submitMode = 'parent';
 		} else {
 			await page.keyboard.press('Enter');
+			submitMode = 'enter';
 		}
-		await sleep(4500);
+		await sleep(1200);
+		let pages = await browser.pages();
+		if (pages.length === 1 && page.url().includes('/explore') && searchButtonParent && submitMode === 'icon') {
+			await searchButtonParent.click().catch(() => {});
+			submitMode += '+parent';
+			await sleep(1200);
+			pages = await browser.pages();
+		}
+		if (pages.length === 1 && page.url().includes('/explore')) {
+			await page.focus('#search-input').catch(() => {});
+			await page.keyboard.press('Enter').catch(() => {});
+			submitMode += '+enter';
+			await sleep(2200);
+			pages = await browser.pages();
+		}
+		const resultPage = pages.length > 1 ? pages[pages.length - 1] : page;
+		await sleep(1000);
 
-		const after = await page.evaluate((query) => {
+		const after = await resultPage.evaluate((query) => {
 			const clean = (v) => String(v || '').replace(/\s+/g, ' ').trim();
 			const rows = [];
 			for (const section of document.querySelectorAll('section.note-item')) {
@@ -751,7 +775,14 @@ const debugSearchNote = async (ctx, keyword) => {
 				rows,
 			};
 		}, keyword);
-		return { before, submitted: true, after };
+		return {
+			before,
+			submitted: true,
+			typedValue,
+			submitMode,
+			pageUrls: (await browser.pages()).map((p) => p.url()),
+			after,
+		};
 	} finally {
 		if (browser) await browser.close().catch(() => {});
 	}
